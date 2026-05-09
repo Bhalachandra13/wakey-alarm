@@ -36,6 +36,23 @@ jobs:
           # Print current account (may be unauthenticated if token invalid); do not fail the workflow on whoami
           eas whoami || true
 
+      - name: Show frontend files and EAS auth (debug)
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          echo '--- listing frontend ---'
+          ls -la frontend || true
+          echo '--- package.json ---'
+          cat frontend/package.json || true
+          echo '--- eas.json ---'
+          cat frontend/eas.json || true
+          echo '--- whoami ---'
+          eas whoami || true
+          echo '--- node version ---'
+          node -v || true
+          echo '--- npm version ---'
+          npm -v || true
+
       - name: Start EAS build (Android)
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
