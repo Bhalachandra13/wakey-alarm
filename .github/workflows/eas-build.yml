@@ -27,12 +27,14 @@ jobs:
       - name: Install EAS CLI
         run: npm install -g eas-cli
 
-      - name: Login to Expo (required)
+      - name: Validate EXPO_TOKEN
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
           if [ -z "${EXPO_TOKEN}" ]; then echo "ERROR: EXPO_TOKEN secret is not set"; exit 1; fi
-          eas login --token "${EXPO_TOKEN}"
+          echo "EXPO_TOKEN provided — using token-based auth for EAS commands."
+          # Print current account (may be unauthenticated if token invalid); do not fail the workflow on whoami
+          eas whoami || true
 
       - name: Start EAS build (Android)
         env:
