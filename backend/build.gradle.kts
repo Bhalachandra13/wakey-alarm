@@ -47,12 +47,16 @@ dependencies {
 
     // Scheduler
     implementation("org.springframework.boot:spring-boot-starter-quartz")
+    implementation("org.quartz-scheduler:quartz:2.3.2")
 
     // Validation
     implementation("org.springframework.boot:spring-boot-starter-validation")
 
     // Logging
     implementation("io.github.microutils:kotlin-logging:3.0.5")
+
+    // RabbitMQ
+    implementation("org.springframework.amqp:spring-rabbit")
 
     // Testing
     testImplementation("org.springframework.boot:spring-boot-starter-test")

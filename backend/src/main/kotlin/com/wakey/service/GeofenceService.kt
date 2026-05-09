@@ -33,7 +33,8 @@ data class ZoneStatus(
 class GeofenceService(
     private val geofenceRepository: GeofenceRepository,
     private val redisTemplate: RedisTemplate<String, String>,
-    private val notificationService: NotificationService? = null
+    private val notificationService: NotificationService? = null,
+    private val eventPublisher: GeofenceEventPublisher? = null
 ) {
 
     fun evaluateLocation(userId: UUID, lat: Double, lng: Double): List<ZoneStatus> {
@@ -128,7 +129,7 @@ class GeofenceService(
     }
 
     private fun publishGeofenceEvent(event: GeofenceTransitionEvent) {
-        // TODO: Publish to RabbitMQ
+        eventPublisher?.publishGeofenceTransition(event)
         logger.debug { "Publishing geofence event: ${event.zoneName}" }
     }
 }

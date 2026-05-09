@@ -5,7 +5,10 @@ import com.wakey.model.Alarm
 import com.wakey.model.AlarmTriggerType
 import com.wakey.model.RepeatRule
 import com.wakey.repository.AlarmRepository
+import com.wakey.scheduler.QuartzJobScheduler
 import mu.KotlinLogging
+import org.quartz.Scheduler
+import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
 import java.time.LocalTime
 import java.util.*
@@ -16,7 +19,9 @@ private val logger = KotlinLogging.logger {}
 class AlarmService(
     private val alarmRepository: AlarmRepository,
     private val geofenceService: GeofenceService,
-    private val notificationService: NotificationService
+    private val notificationService: NotificationService,
+    @Autowired(required = false)
+    private val quartz: Scheduler? = null
 ) {
 
     fun createAlarm(alarm: Alarm): Alarm {
@@ -138,15 +143,44 @@ class AlarmService(
     }
 
     private fun scheduleAlarm(alarm: Alarm) {
-        // TODO: Integrate Quartz scheduler
-        logger.debug { "Scheduling alarm: ${alarm.id}" }
+        if (quartz == null) {
+            logger.warn { "Quartz scheduler not available, skipping job scheduling" }
+            return
+        }
+
+        try {
+            val jobKey = QuartzJobScheduler.scheduleTimeAlarm(
+                quartz,
+                alarm.id,
+                alarm.user.id,
+                alarm.scheduledTime ?: LocalTime.of(0, 0),
+                alarm.repeatRule.toString()
+            )
+            
+            if (jobKey != null) {
+                val updated = alarm.copy(quartzJobKey = jobKey)
+                alarmRepository.save(updated)
+                logger.debug { "Alarm job scheduled: ${alarm.id}" }
+            }
+        } catch (e: Exception) {
+            logger.error(e) { "Failed to schedule alarm: ${alarm.id}" }
+        }
     }
 
     private fun cancelAlarm(alarm: Alarm) {
-        // TODO: Cancel Quartz job
-        alarm.quartzJobKey = null
-        alarmRepository.save(alarm)
-        logger.debug { "Alarm job cancelled: ${alarm.id}" }
+        if (quartz == null) {
+            logger.warn { "Quartz scheduler not available" }
+            return
+        }
+
+        try {
+            QuartzJobScheduler.cancelAlarm(quartz, alarm.id)
+            val updated = alarm.copy(quartzJobKey = null)
+            alarmRepository.save(updated)
+            logger.debug { "Alarm job cancelled: ${alarm.id}" }
+        } catch (e: Exception) {
+            logger.error(e) { "Failed to cancel alarm: ${alarm.id}" }
+        }
     }
 
     private fun isWithinTimeWindow(targetTime: LocalTime?, windowMinutes: Int): Boolean {
