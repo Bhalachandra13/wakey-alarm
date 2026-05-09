@@ -1,0 +1,59 @@
+name: EAS Build Android
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Install EAS CLI
+        run: npm install -g eas-cli
+
+      - name: Login to Expo (required)
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "${EXPO_TOKEN}" ]; then echo "ERROR: EXPO_TOKEN secret is not set"; exit 1; fi
+          eas login --token "${EXPO_TOKEN}"
+
+      - name: Start EAS build (Android)
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          cd frontend
+          # Run build and save metadata as JSON (non-interactive)
+          eas build --platform android --non-interactive --profile production --json > build.json || true
+
+      - name: Upload EAS build metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: eas-build-metadata
+          path: frontend/build.json
+
+      - name: Show build metadata
+        if: always()
+        run: |
+          echo "--- build.json ---"
+          jq . frontend/build.json || cat frontend/build.json || true
+
+      - name: Finish
+        run: echo "EAS build triggered. If successful, download artifacts from Expo build page or use eas-cli to download by build id."
