@@ -40,14 +40,38 @@ jobs:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
           cd frontend
-          # Run build and save metadata as JSON (non-interactive)
-          eas build --platform android --non-interactive --profile production --json > build.json || true
+          # Run build and save metadata as JSON (non-interactive). This blocks until build completes.
+          eas build --platform android --non-interactive --profile production --json > build.json
+
+      - name: Download built APK (if available)
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          cd frontend
+          if [ -f build.json ]; then
+            BUILD_ID=$(jq -r '.id' build.json || echo "")
+            echo "Build ID: $BUILD_ID"
+            if [ -n "$BUILD_ID" ] && [ "$BUILD_ID" != "null" ]; then
+              # Download the APK to the runner
+              eas build:download --platform android --id "$BUILD_ID" --output ./build.apk || echo "Download failed or not available"
+            else
+              echo "No build id found in build.json"
+            fi
+          else
+            echo "build.json not found, skipping download"
+          fi
 
       - name: Upload EAS build metadata
         uses: actions/upload-artifact@v4
         with:
           name: eas-build-metadata
           path: frontend/build.json
+
+      - name: Upload EAS APK (if present)
+        uses: actions/upload-artifact@v4
+        with:
+          name: eas-apk
+          path: frontend/build.apk
 
       - name: Show build metadata
         if: always()
@@ -56,4 +80,4 @@ jobs:
           jq . frontend/build.json || cat frontend/build.json || true
 
       - name: Finish
-        run: echo "EAS build triggered. If successful, download artifacts from Expo build page or use eas-cli to download by build id."
+        run: echo "EAS build completed or triggered. Downloaded APK (if available) is uploaded as artifact 'eas-apk'."
