@@ -24,8 +24,9 @@ jobs:
         run: |
           echo "Skipping npm install; EAS will install dependencies during the build in Expo's environment."
 
-      - name: Install EAS CLI
-        run: npm install -g eas-cli
+      - name: Skip installing EAS CLI (use npx)
+        run: |
+          echo "Using npx eas-cli@latest for init/build to ensure latest CLI and avoid global install"
 
       - name: Validate EXPO_TOKEN
         env:
@@ -59,7 +60,7 @@ jobs:
         run: |
           cd frontend
           echo "Ensuring EAS project is linked"
-          eas init --non-interactive --id "c3a3cb6d-c4d7-4fd2-a9c0-2f0843766f42" || (echo "eas init failed; listing .eas" && ls -la .eas || true && cat .eas/config.json || true)
+          npx eas-cli@latest init --non-interactive --id "c3a3cb6d-c4d7-4fd2-a9c0-2f0843766f42" || (echo "eas init failed; listing .eas" && ls -la .eas || true && cat .eas/config.json || true)
 
       - name: Start EAS build (Android)
         env:
@@ -67,7 +68,7 @@ jobs:
         run: |
           cd frontend
           # Run build and save metadata as JSON (non-interactive). This blocks until build completes.
-          eas build --platform android --non-interactive --profile production --json > build.json
+          npx eas-cli@latest build --platform android --non-interactive --profile production --json > build.json
 
       - name: Download built APK (if available)
         env:
@@ -79,7 +80,7 @@ jobs:
             echo "Build ID: $BUILD_ID"
             if [ -n "$BUILD_ID" ] && [ "$BUILD_ID" != "null" ]; then
               # Download the APK to the runner
-              eas build:download --platform android --id "$BUILD_ID" --output ./build.apk || echo "Download failed or not available"
+              npx eas-cli@latest build:download --platform android --id "$BUILD_ID" --output ./build.apk || echo "Download failed or not available"
             else
               echo "No build id found in build.json"
             fi
