@@ -20,3 +20,5 @@ EAS Cloud Build (Android) - Quick Instructions
 Notes
 - If EAS needs Android signing keys, the build may prompt to generate or request credentials; using `--non-interactive` will let EAS manage keys automatically when possible.
 - For private keystore or custom signing, manage credentials in the Expo dashboard or use `eas credentials` CLI.
+
+- Triggered build: 2026-05-09T15:38:28+02:00
