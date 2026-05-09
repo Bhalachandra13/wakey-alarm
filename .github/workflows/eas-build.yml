@@ -23,7 +23,7 @@ jobs:
       - name: Install frontend dependencies
         run: |
           cd frontend
-          npm ci
+          npm install --no-audit --no-fund --legacy-peer-deps
 
       - name: Install EAS CLI
         run: npm install -g eas-cli
