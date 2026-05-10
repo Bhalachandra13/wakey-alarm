@@ -20,9 +20,15 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Skip installing frontend dependencies
+      - name: Install frontend dependencies (CI)
         run: |
-          echo "Skipping npm install; EAS will install dependencies during the build in Expo's environment."
+          cd frontend
+          echo 'Installing frontend dependencies...'
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund || (echo 'npm ci failed; removing package-lock.json and trying npm install' && rm -f package-lock.json && npm install --legacy-peer-deps --no-audit --no-fund)
+          else
+            npm install --legacy-peer-deps --no-audit --no-fund
+          fi
 
       - name: Skip installing EAS CLI (use npx)
         run: |
@@ -35,7 +41,7 @@ jobs:
           if [ -z "${EXPO_TOKEN}" ]; then echo "ERROR: EXPO_TOKEN secret is not set"; exit 1; fi
           echo "EXPO_TOKEN provided — using token-based auth for EAS commands."
           # Print current account (may be unauthenticated if token invalid); do not fail the workflow on whoami
-          eas whoami || true
+          npx eas-cli@latest whoami || true
 
       - name: Show frontend files and EAS auth (debug)
         env:
@@ -48,7 +54,7 @@ jobs:
           echo '--- eas.json ---'
           cat frontend/eas.json || true
           echo '--- whoami ---'
-          eas whoami || true
+          npx eas-cli@latest whoami || true
           echo '--- node version ---'
           node -v || true
           echo '--- npm version ---'
