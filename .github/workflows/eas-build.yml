@@ -65,6 +65,7 @@ jobs:
       - name: Start EAS build (Android)
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EAS_BUILD_NO_EXPO_GO_WARNING: true
         run: |
           cd frontend
           # Run build and save metadata as JSON (non-interactive). This blocks until build completes.

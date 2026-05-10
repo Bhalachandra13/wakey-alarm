@@ -4,6 +4,43 @@
     "slug": "wakey-wakey",
     "version": "1.0.0",
     "projectId": "c3a3cb6d-c4d7-4fd2-a9c0-2f0843766f42",
+    "scheme": "wakey",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTabletMode": true,
+      "bundleIdentifier": "com.wakey.alarm"
+    },
+    "android": {
+      "package": "com.wakey.alarm",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow Wakey to access your location for geofencing"
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#ffffff"
+        }
+      ]
+    ],
     "extra": {
       "eas": {
         "projectId": "c3a3cb6d-c4d7-4fd2-a9c0-2f0843766f42"
