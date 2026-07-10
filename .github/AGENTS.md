@@ -244,20 +244,34 @@ dig through `git log` diffs.
 
 ## 8. Testing Requirements Per Iteration
 
-Per the Definition of Done in `workflow_plan.md`, every iteration has two
-layers of testing — **both are required, not optional:**
+Per the Definition of Done in `workflow_plan.md`, every iteration has three
+layers of testing — **all are required, not optional:**
 
 1. **Automated (assistant-runnable):** Dart unit tests and widget tests.
    Run `flutter test` and confirm all pass before reporting an iteration
    as complete. Write new tests alongside new features — do not defer
    test-writing to "a later cleanup pass."
-2. **Manual on-device (human-runnable only):** Any iteration touching
+2. **APK Build for Manual Testing:** At the end of each iteration (especially
+   those touching native code — Iterations 1, 3, 4), build a release APK via
+   `flutter build apk --release`. This ensures:
+   - The app compiles end-to-end (catches linker/manifest errors early)
+   - A runnable APK is ready for immediate manual on-device testing
+   - No "it works in `flutter run` but crashes in release" surprises
+   - Store the APK path in a `.github/history/` entry so the human knows
+     where to find it for testing
+3. **Manual on-device (human-runnable only):** Any iteration touching
    native code (Iterations 1, 3, 4) has a manual checklist in
    `workflow_plan.md` (e.g. "force-kill the app, confirm alarm still
    rings"). **The assistant cannot perform these steps itself** — it
    should clearly list which manual checks remain outstanding for the
    human to verify on their physical device, rather than assuming they're
-   covered by automated tests.
+   covered by automated tests. The built APK should be installed and tested
+   against this checklist.
+
+Do not report an iteration as "done" if only the automated tests pass —
+explicitly state that:
+- APK was successfully built and is ready for testing
+- Manual on-device verification is pending (list which checks remain)
 
 Do not report an iteration as "done" if only the automated tests pass —
 explicitly state that manual on-device verification is still pending.
