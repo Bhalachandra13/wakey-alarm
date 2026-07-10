@@ -171,10 +171,8 @@ class MainActivity : FlutterActivity() {
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val intent = Intent(
-                AlarmManager.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
-                Uri.parse("package:$packageName"),
-            )
+            val action = "android.app.action.REQUEST_SCHEDULE_EXACT_ALARM"
+            val intent = Intent(action, Uri.parse("package:$packageName"))
             startActivity(intent)
         }
 
