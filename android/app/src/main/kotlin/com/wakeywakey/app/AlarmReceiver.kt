@@ -46,5 +46,11 @@ class AlarmReceiver : BroadcastReceiver() {
         const val EXTRA_VIBRATE = "vibrate"
         const val EXTRA_SNOOZE_DURATION_MIN = "snoozeDurationMin"
         const val EXTRA_MAX_SNOOZE_COUNT = "maxSnoozeCount"
+        // Schedule metadata – needed by [AlarmScheduler] when the
+        // receiver self-reschedules a repeating alarm, and by
+        // [AlarmService] if it ever needs to recompute fire times.
+        const val EXTRA_TIME_HOUR = "timeHour"
+        const val EXTRA_TIME_MINUTE = "timeMinute"
+        const val EXTRA_REPEAT_DAYS = "repeatDays"
     }
 }

@@ -1,9 +1,6 @@
 package com.wakeywakey.app
 
 import android.app.Activity
-import android.app.AlarmManager
-import android.app.PendingIntent
-import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -72,7 +69,7 @@ class RingingActivity : Activity() {
 
         findViewById<Button>(R.id.snooze_button).setOnClickListener {
             Log.d(TAG, "Snooze tapped for alarmId=$alarmId")
-            scheduleSnooze(alarmId, snoozeDurationMin, label, soundUri, vibrate)
+            scheduleSnooze(alarmId, snoozeDurationMin)
             stopAlarmService()
             finish()
         }
@@ -96,52 +93,27 @@ class RingingActivity : Activity() {
     // Snooze
     // -------------------------------------------------------------------------
 
-    private fun scheduleSnooze(
-        alarmId: Int,
-        snoozeDurationMin: Int,
-        label: String,
-        soundUri: String,
-        vibrate: Boolean,
-    ) {
+    /**
+     * Re-schedule the same alarm for [snoozeDurationMin] minutes
+     * from now. Reads the persisted [AlarmScheduler.AlarmData]
+     * (which carries the sound, label, vibrate, repeatDays, etc.)
+     * and delegates to [AlarmScheduler.schedule] so the snoozed
+     * alarm is visible to [BootReceiver] on the next reboot.
+     */
+    private fun scheduleSnooze(alarmId: Int, snoozeDurationMin: Int) {
         if (alarmId < 0) {
             Log.w(TAG, "Cannot snooze: missing alarmId in intent")
             return
         }
 
-        val triggerTime = System.currentTimeMillis() + snoozeDurationMin * 60_000L
-
-        // Mirror the same extras the original schedule used so the
-        // snoozed alarm rings with the same sound/vibration/label.
-        val receiverIntent = Intent(this, AlarmReceiver::class.java).apply {
-            putExtra(AlarmReceiver.EXTRA_ALARM_ID, alarmId)
-            putExtra(AlarmReceiver.EXTRA_LABEL, label)
-            putExtra(AlarmReceiver.EXTRA_SOUND_URI, soundUri)
-            putExtra(AlarmReceiver.EXTRA_VIBRATE, vibrate)
-            putExtra(AlarmReceiver.EXTRA_SNOOZE_DURATION_MIN, snoozeDurationMin)
+        val data = AlarmScheduler.readPersisted(this, alarmId)
+        if (data == null) {
+            Log.w(TAG, "Cannot snooze: no persisted AlarmData for id=$alarmId")
+            return
         }
 
-        val pendingIntent = PendingIntent.getBroadcast(
-            this,
-            alarmId,
-            receiverIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-
-        // The "show" PendingIntent is fired when the user taps the
-        // status-bar alarm icon (visible because we used setAlarmClock).
-        // Send them to MainActivity so they land in the app.
-        val showIntent = PendingIntent.getActivity(
-            this,
-            alarmId,
-            Intent(this, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-
-        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val alarmClockInfo = AlarmManager.AlarmClockInfo(triggerTime, showIntent)
-        alarmManager.setAlarmClock(alarmClockInfo, pendingIntent)
+        val triggerTime = System.currentTimeMillis() + snoozeDurationMin * 60_000L
+        AlarmScheduler.schedule(this, data, triggerTime)
     }
 
     // -------------------------------------------------------------------------
