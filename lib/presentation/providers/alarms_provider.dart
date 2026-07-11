@@ -2,6 +2,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:wakey_alarm/data/alarm_dao.dart';
 import 'package:wakey_alarm/data/wakey_database.dart';
 import 'package:wakey_alarm/domain/alarm.dart';
+import 'package:wakey_alarm/domain/alarm_scheduler.dart';
+import 'package:wakey_alarm/native_bridge/alarm_bridge.dart';
 
 /// Provides access to the [WakeyDatabase] singleton.
 final databaseProvider = Provider<WakeyDatabase>((ref) {
@@ -14,49 +16,83 @@ final alarmDaoProvider = Provider<AlarmDao>((ref) {
   return AlarmDao(database);
 });
 
+/// Provides the [AlarmBridge] singleton (MethodChannel + EventChannel wrappers).
+final alarmBridgeProvider = Provider<AlarmBridge>((ref) {
+  return const AlarmBridge();
+});
+
+/// Provides the [AlarmScheduler] that converts [Alarm] objects into native
+/// AlarmManager scheduling calls via [AlarmBridge].
+final alarmSchedulerProvider = Provider<AlarmScheduler>((ref) {
+  final bridge = ref.watch(alarmBridgeProvider);
+  return AlarmScheduler(bridge);
+});
+
 /// AsyncNotifier for managing the list of alarms.
 class AlarmsNotifier extends AsyncNotifier<List<Alarm>> {
   late AlarmDao _alarmDao;
+  late AlarmScheduler _scheduler;
 
   @override
   Future<List<Alarm>> build() async {
     _alarmDao = ref.watch(alarmDaoProvider);
+    _scheduler = ref.watch(alarmSchedulerProvider);
     return _alarmDao.getAll();
   }
 
-  /// Insert a new alarm and refresh the list.
+  /// Insert a new alarm, schedule it if enabled, and refresh the list.
   Future<int> insertAlarm(Alarm alarm) async {
     final id = await _alarmDao.insert(alarm);
-    // Refresh the list after insert
+    // Schedule the alarm with the DB-assigned ID before refreshing the list.
+    if (alarm.isEnabled) {
+      final scheduled = alarm.copyWith(id: id);
+      await _scheduler.scheduleAlarm(scheduled);
+    }
     ref.invalidateSelf();
     return id;
   }
 
-  /// Update an existing alarm and refresh the list.
+  /// Update an existing alarm, re-schedule or cancel as needed, and refresh.
   Future<void> updateAlarm(Alarm alarm) async {
     await _alarmDao.update(alarm);
-    // Refresh the list after update
+    // Cancel any existing schedule then re-schedule if still enabled.
+    // Always cancel first to avoid stale PendingIntents from the old time.
+    if (alarm.id != null) {
+      await _scheduler.cancelAlarm(alarm.id!);
+      if (alarm.isEnabled) {
+        await _scheduler.scheduleAlarm(alarm);
+      }
+    }
     ref.invalidateSelf();
   }
 
-  /// Delete an alarm by ID and refresh the list.
+  /// Delete an alarm by ID, cancel its schedule, and refresh the list.
   Future<void> deleteAlarm(int id) async {
+    await _scheduler.cancelAlarm(id);
     await _alarmDao.delete(id);
-    // Refresh the list after delete
     ref.invalidateSelf();
   }
 
-  /// Toggle the enabled state of an alarm.
+  /// Toggle the enabled state of an alarm and schedule/cancel accordingly.
   Future<void> toggleEnabled(int id, bool newState) async {
     await _alarmDao.updateEnabled(id, newState);
-    // Refresh the list after toggle
+    if (newState) {
+      // Re-read the full alarm to get all fields needed for scheduling.
+      final alarm = await _alarmDao.read(id);
+      if (alarm != null) {
+        await _scheduler.scheduleAlarm(alarm);
+      }
+    } else {
+      await _scheduler.cancelAlarm(id);
+    }
     ref.invalidateSelf();
   }
 
   /// Toggle the armed state of an alarm (for location-based alarms).
   Future<void> toggleArmed(int id, bool newState) async {
     await _alarmDao.updateArmed(id, newState);
-    // Refresh the list after toggle
+    // Arming/disarming of geofence alarms is handled by GeofencingClient
+    // in Iteration 4; no AlarmManager scheduling needed here.
     ref.invalidateSelf();
   }
 

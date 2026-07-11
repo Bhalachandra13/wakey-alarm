@@ -1,7 +1,7 @@
 import 'package:flutter/services.dart';
 
 class AlarmBridge {
-  AlarmBridge({MethodChannel? methodChannel, EventChannel? eventChannel})
+  const AlarmBridge({MethodChannel? methodChannel, EventChannel? eventChannel})
     : _methodChannel = methodChannel ?? const MethodChannel(_methodName),
       _eventChannel = eventChannel ?? const EventChannel(_eventName);
 
