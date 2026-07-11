@@ -71,12 +71,14 @@ class RingingActivity : Activity() {
             Log.d(TAG, "Snooze tapped for alarmId=$alarmId")
             scheduleSnooze(alarmId, snoozeDurationMin)
             stopAlarmService()
+            emitOutcome("snoozed")
             finish()
         }
 
         findViewById<Button>(R.id.dismiss_button).setOnClickListener {
             Log.d(TAG, "Dismiss tapped for alarmId=$alarmId")
             stopAlarmService()
+            emitOutcome("dismissed")
             finish()
         }
     }
@@ -125,6 +127,27 @@ class RingingActivity : Activity() {
             action = AlarmService.ACTION_STOP_ALARM
         }
         startService(stopIntent)
+    }
+
+    // -------------------------------------------------------------------------
+    // Event reporting
+    // -------------------------------------------------------------------------
+
+    /**
+     * Push a dismiss/snooze event to the Dart side via
+     * [AlarmEventBus]. No-op if no Dart listener is attached
+     * (e.g. the process was cold-started by the alarm broadcast
+     * and the user never opened the app).
+     */
+    private fun emitOutcome(type: String) {
+        val currentAlarmId = intent.getIntExtra(AlarmReceiver.EXTRA_ALARM_ID, -1)
+        if (currentAlarmId < 0) return
+        AlarmEventBus.emit(
+            mapOf(
+                "alarmId" to currentAlarmId,
+                "type" to type,
+            ),
+        )
     }
 
     companion object {

@@ -51,12 +51,14 @@ class MainActivity : FlutterActivity() {
             object : EventChannel.StreamHandler {
                 override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
                     alarmEventSink = events
-                    Log.d(TAG, "alarmFiredEventStream listener attached")
+                    events?.let { AlarmEventBus.attach(it) }
+                    Log.d(TAG, "alarmEventStream listener attached")
                 }
 
                 override fun onCancel(arguments: Any?) {
                     alarmEventSink = null
-                    Log.d(TAG, "alarmFiredEventStream listener detached")
+                    AlarmEventBus.detach()
+                    Log.d(TAG, "alarmEventStream listener detached")
                 }
             },
         )
