@@ -62,6 +62,21 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Alarm clock: plays ringtone and vibrates while the user dismisses or snoozes." />
         </service>
+        <!-- Re-schedules every persisted alarm on BOOT_COMPLETED.
+             The OS clears AlarmManager state on shutdown, so without
+             this receiver alarms would silently vanish after every
+             reboot. exported=true is required for the system to be
+             able to deliver the broadcast. -->
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
