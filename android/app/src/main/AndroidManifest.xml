@@ -2,6 +2,14 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- API 28+ required for any foreground service. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- API 34+ required for foreground services of type="specialUse",
+         which is what an alarm clock needs (Android has no dedicated
+         "alarm" FGS type). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application
         android:label="Wakey-Wakey"
@@ -39,6 +47,21 @@
             android:excludeFromRecents="true"
             android:launchMode="singleInstance"
             android:taskAffinity="" />
+        <!-- Foreground service that drives the alarm ringing: shows the
+             high-priority notification, plays the ringtone, vibrates,
+             and exposes RingingActivity via fullScreenIntent. Uses
+             foregroundServiceType="specialUse" because Android has no
+             dedicated "alarm" type; the subtype property below tells
+             the system what the FGS is actually doing. -->
+        <service
+            android:name=".AlarmService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Alarm clock: plays ringtone and vibrates while the user dismisses or snoozes." />
+        </service>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
