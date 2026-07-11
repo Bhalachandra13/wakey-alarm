@@ -29,6 +29,16 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Full-screen alarm ringing UI. Launched by AlarmService via
+             a notification fullScreenIntent, so users can dismiss or
+             snooze the alarm from the lock screen. Not in the launcher;
+             not in recents; runs in its own task. -->
+        <activity
+            android:name=".RingingActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleInstance"
+            android:taskAffinity="" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
