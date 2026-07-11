@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'providers/app_providers.dart';
+import 'screens/alarms_screen.dart';
 
 class WakeyAlarmApp extends StatelessWidget {
   const WakeyAlarmApp({super.key});
@@ -56,7 +57,20 @@ class _AppShellState extends ConsumerState<AppShell> {
 
     return Scaffold(
       appBar: AppBar(title: Text(selectedTab.title)),
-      body: _EmptyTabView(tab: selectedTab),
+      body: _selectedIndex == 0
+          ? const AlarmsScreen()
+          : _EmptyTabView(tab: selectedTab),
+      floatingActionButton: _selectedIndex == 0
+          ? FloatingActionButton(
+              onPressed: () {
+                // TODO: Navigate to create alarm screen
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Create new alarm')),
+                );
+              },
+              child: const Icon(Icons.add),
+            )
+          : null,
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedIndex,
         onDestinationSelected: (index) {
