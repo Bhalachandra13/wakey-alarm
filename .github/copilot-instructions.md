@@ -252,13 +252,45 @@ layers of testing — **all are required, not optional:**
    as complete. Write new tests alongside new features — do not defer
    test-writing to "a later cleanup pass."
 2. **APK Build for Manual Testing:** At the end of each iteration (especially
-   those touching native code — Iterations 1, 3, 4), build a release APK via
-   `flutter build apk --release`. This ensures:
+   those touching native code — Iterations 1, 3, 4), build a release APK.
+   This ensures:
    - The app compiles end-to-end (catches linker/manifest errors early)
    - A runnable APK is ready for immediate manual on-device testing
    - No "it works in `flutter run` but crashes in release" surprises
-   - Store the APK path in a `.github/history/` entry so the human knows
-     where to find it for testing
+   - Store the APK path + size in a `.github/history/` entry so the human
+     knows where to find it for testing
+
+   **Exact command** (verified working in Iterations 0 and 1 — see
+   `.github/history/2026-07-11-0012_iter1-apk-built.md` and the build entry
+   at the end of each iteration):
+
+   ```bash
+   flutter build apk --release --no-shrink
+   ```
+
+   - **Output:** `build/app/outputs/flutter-apk/app-release.apk`
+     (≈50 MB on this project as of Iter 1; will grow with native libs).
+   - **`--no-shrink` is required**, not optional. R8/ProGuard shrinking in
+     release builds can strip `MethodChannel` handler classes,
+     `BroadcastReceiver`s, foreground `Service`s, and FGS property
+     metadata if their `keep` rules are not yet set up. We do not have
+     those rules in Iteration 1. Without `--no-shrink` the APK will build
+     successfully but **the alarm will silently fail to fire on a real
+     device** because the receiver class is gone. Revisit this when
+     ProGuard rules are introduced in a later iteration.
+   - **Build time:** ≈3 minutes (192 s Gradle `assembleRelease`) when the
+     Gradle daemon and Pub cache are warm; first build from a clean
+     checkout can take 10+ minutes and downloads ~2 GB of dependencies.
+   - **Signing:** the release type is currently configured to sign with
+     the debug keystore (see `android/app/build.gradle.kts`,
+     `buildTypes.release.signingConfig = signingConfigs.getByName("debug")`).
+     This is intentional for dev/manual testing — the APK installs and
+     runs, but it is **not** suitable for Play Store distribution. Add a
+     real release signing config before any store upload.
+   - **Run from WSL only.** The `/mnt/d/...` path used in development
+     works but is slow (Windows mount layer); if the iteration is being
+     rebuilt many times, copy the project to `~/projects/wakey-wakey/`
+     inside WSL for faster incremental builds.
 3. **Manual on-device (human-runnable only):** Any iteration touching
    native code (Iterations 1, 3, 4) has a manual checklist in
    `workflow_plan.md` (e.g. "force-kill the app, confirm alarm still
