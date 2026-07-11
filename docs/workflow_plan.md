@@ -53,9 +53,9 @@ None — this is the starting point.
 ## Iteration 1 — Normal Alarm
 
 ### Tasks
-- [ ] Alarm creation UI (time picker, repeat-day selector, label, sound,
+- [x] Alarm creation UI (time picker, repeat-day selector, label, sound,
       vibration toggle)
-- [ ] Alarm list UI (enable/disable toggle, edit, delete)
+- [x] Alarm list UI (enable/disable toggle, edit, delete)
 - [ ] Implement native `AlarmManager.setAlarmClock()` scheduling in Kotlin
 - [ ] Implement `BroadcastReceiver` to catch alarm fire events
 - [ ] Implement foreground `Service` to play sound + vibrate

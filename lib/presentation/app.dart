@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'providers/app_providers.dart';
 import 'screens/alarms_screen.dart';
+import 'screens/edit_alarm_screen.dart';
+
 
 class WakeyAlarmApp extends StatelessWidget {
   const WakeyAlarmApp({super.key});
@@ -63,9 +65,10 @@ class _AppShellState extends ConsumerState<AppShell> {
       floatingActionButton: _selectedIndex == 0
           ? FloatingActionButton(
               onPressed: () {
-                // TODO: Navigate to create alarm screen
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Create new alarm')),
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (context) => const EditAlarmScreen(),
+                  ),
                 );
               },
               child: const Icon(Icons.add),
