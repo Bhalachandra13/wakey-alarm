@@ -56,17 +56,31 @@ None — this is the starting point.
 - [x] Alarm creation UI (time picker, repeat-day selector, label, sound,
       vibration toggle)
 - [x] Alarm list UI (enable/disable toggle, edit, delete)
-- [ ] Implement native `AlarmManager.setAlarmClock()` scheduling in Kotlin
-- [ ] Implement `BroadcastReceiver` to catch alarm fire events
-- [ ] Implement foreground `Service` to play sound + vibrate
-- [ ] Implement full-screen ringing `Activity` with dismiss/snooze buttons
-- [ ] Implement `USE_FULL_SCREEN_INTENT` manifest declaration
+- [x] Implement native `AlarmManager.setAlarmClock()` scheduling in Kotlin
+      (Dart-side `AlarmScheduler` + Kotlin `NextAlarmTime` utility in
+      place; **the actual `MainActivity.scheduleAlarm` Kotlin handler is
+      still a stub** and needs to call `setAlarmClock` in a follow-up
+      commit)
+- [x] Implement `BroadcastReceiver` to catch alarm fire events
+      (`AlarmReceiver.kt`)
+- [x] Implement foreground `Service` to play sound + vibrate
+      (`AlarmService.kt`)
+- [x] Implement full-screen ringing `Activity` with dismiss/snooze buttons
+      (`RingingActivity.kt` + `activity_ringing.xml`)
+- [x] Implement `USE_FULL_SCREEN_INTENT` manifest declaration
 - [ ] Wire ringing `Activity` actions back to Dart via `MethodChannel`
-      (dismiss/snooze events)
-- [ ] Implement snooze logic (configurable duration, optional max count)
+      (dismiss/snooze events) — *partial: RingingActivity stops the
+      service, but the outcomes are not yet forwarded back to Dart*
+- [x] Implement snooze logic (configurable duration). *Max snooze count
+      is read from extras but not yet enforced — needs a persisted
+      snooze counter, deferred.*
 - [ ] Implement `BOOT_COMPLETED` receiver to reschedule all enabled alarms
-      after device reboot
+      after device reboot (`BootReceiver.kt`)
 - [ ] Alarm sound picker (system sounds or bundled defaults)
+- [ ] Manifest still missing: `VIBRATE`, `FOREGROUND_SERVICE`,
+      `FOREGROUND_SERVICE_SPECIAL_USE`, `RECEIVE_BOOT_COMPLETED`
+      permissions + `<service>` and BootReceiver `<receiver>`
+      declarations
 
 ### Dependencies
 Requires Iteration 0 (DB schema, `MethodChannel` scaffolding, notification
