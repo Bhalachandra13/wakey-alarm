@@ -28,6 +28,19 @@ final alarmSchedulerProvider = Provider<AlarmScheduler>((ref) {
   return AlarmScheduler(bridge);
 });
 
+/// Stream of alarm lifecycle events coming from native (fired /
+/// snoozed / dismissed), exposed as a Riverpod `StreamProvider` so
+/// notifiers and widgets can `ref.listen` for state changes.
+///
+/// Distinct from [ringingAlarmIdProvider] (which folds the same
+/// stream into a single nullable id for the ringing banner).
+/// [alarmEventsProvider] preserves the full event so callers can
+/// react to dismiss/snooze with their own side effects.
+final alarmEventsProvider = StreamProvider<AlarmEvent>((ref) {
+  final bridge = ref.watch(alarmBridgeProvider);
+  return bridge.alarmEvents;
+});
+
 /// AsyncNotifier for managing the list of alarms.
 class AlarmsNotifier extends AsyncNotifier<List<Alarm>> {
   late AlarmDao _alarmDao;
@@ -37,7 +50,59 @@ class AlarmsNotifier extends AsyncNotifier<List<Alarm>> {
   Future<List<Alarm>> build() async {
     _alarmDao = ref.watch(alarmDaoProvider);
     _scheduler = ref.watch(alarmSchedulerProvider);
+    // Subscribe to native dismiss/snooze events so the sqflite
+    // mirror stays in sync with the native SharedPreferences copy.
+    // The native side is the source of truth for the running
+    // alarm (it cleans up the PendingIntent); the Dart side has
+    // to mirror that decision or the UI will show stale rows
+    // after the next re-open. See RingingActivity.dismissAlarm.
+    ref.listen<AsyncValue<AlarmEvent>>(alarmEventsProvider, (prev, next) {
+      final event = next.value;
+      if (event == null) return;
+      switch (event.type) {
+        case AlarmEventType.fired:
+          // RingingActivity already showed the UI; nothing to
+          // do here. The ringing banner is driven by
+          // `ringingAlarmIdProvider` directly.
+          break;
+        case AlarmEventType.snoozed:
+          // The native side already re-scheduled the alarm.
+          // We don't need to touch the sqflite row because the
+          // Alarm object's `time` field is the natural fire
+          // time, not the snooze fire time. The UI is correct
+          // as-is; just refresh so any listeners re-read.
+          ref.invalidateSelf();
+        case AlarmEventType.dismissed:
+          _onNativeDismiss(event.alarmId);
+      }
+    });
     return _alarmDao.getAll();
+  }
+
+  /// Mirror a native dismiss into the sqflite database.
+  ///
+  /// For a one-shot, the native side already cancelled the
+  /// PendingIntent + removed the SharedPreferences row, so we
+  /// delete the sqflite row too. For a repeating alarm, the
+  /// native side already re-scheduled the next natural fire,
+  /// so we just refresh — the row's time field doesn't change.
+  /// If the row was already gone (e.g. user toggled it off
+  /// before the ringing UI showed up), the delete is a safe
+  /// no-op.
+  Future<void> _onNativeDismiss(int alarmId) async {
+    final alarm = await _alarmDao.read(alarmId);
+    if (alarm == null) {
+      // Already gone — nothing to do.
+      ref.invalidateSelf();
+      return;
+    }
+    if (alarm.repeatDays != null && alarm.repeatDays!.isNotEmpty) {
+      // Native side re-scheduled; just refresh.
+      ref.invalidateSelf();
+      return;
+    }
+    await _alarmDao.delete(alarmId);
+    ref.invalidateSelf();
   }
 
   /// Insert a new alarm, schedule it if enabled, and refresh the list.
