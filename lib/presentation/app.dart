@@ -5,7 +5,6 @@ import 'providers/app_providers.dart';
 import 'screens/alarms_screen.dart';
 import 'screens/edit_alarm_screen.dart';
 
-
 class WakeyAlarmApp extends StatelessWidget {
   const WakeyAlarmApp({super.key});
 

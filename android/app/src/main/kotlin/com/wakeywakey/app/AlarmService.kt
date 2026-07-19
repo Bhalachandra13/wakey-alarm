@@ -63,6 +63,18 @@ class AlarmService : Service() {
         val notification = buildNotification(label, fullScreenIntent)
 
         startForeground(NOTIFICATION_ID, notification)
+        // ALSO call startActivity() directly. The notification's
+        // `fullScreenIntent` is silently dropped by the system on
+        // Android 12+ when the app is already in the foreground
+        // (or when the screen is on, or when the app has been
+        // foregrounded recently — the exact rate limit is
+        // undocumented but well-known). Calling startActivity()
+        // from a foreground service is explicitly permitted by
+        // the background-activity-start restrictions and is the
+        // reliable way to bring RingingActivity forward. The
+        // notification's fullScreenIntent remains as the
+        // lock-screen / cold-start fallback.
+        launchRingingActivity(alarmId, label, soundUri, vibrate, snoozeDurationMin, maxSnoozeCount)
         playRingtone(soundUri)
         if (vibrate) startVibration()
 
@@ -98,6 +110,45 @@ class AlarmService : Service() {
         }
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         return PendingIntent.getActivity(this, alarmId, ringingIntent, flags)
+    }
+
+    /**
+     * Bring [RingingActivity] to the foreground directly, bypassing
+     * the notification's `fullScreenIntent` (see comment in
+     * [onStartCommand] for why this is needed on Android 12+).
+     *
+     * The Intent uses `FLAG_ACTIVITY_NEW_TASK` (required when
+     * starting an Activity from a non-Activity context) and
+     * `FLAG_ACTIVITY_CLEAR_TOP` (so a re-fire of the same alarm
+     * doesn't stack multiple RingingActivity instances).
+     */
+    private fun launchRingingActivity(
+        alarmId: Int,
+        label: String,
+        soundUri: String,
+        vibrate: Boolean,
+        snoozeDurationMin: Int,
+        maxSnoozeCount: Int,
+    ) {
+        val ringingIntent = Intent(this, RingingActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(AlarmReceiver.EXTRA_ALARM_ID, alarmId)
+            putExtra(AlarmReceiver.EXTRA_LABEL, label)
+            putExtra(AlarmReceiver.EXTRA_SOUND_URI, soundUri)
+            putExtra(AlarmReceiver.EXTRA_VIBRATE, vibrate)
+            putExtra(AlarmReceiver.EXTRA_SNOOZE_DURATION_MIN, snoozeDurationMin)
+            putExtra(AlarmReceiver.EXTRA_MAX_SNOOZE_COUNT, maxSnoozeCount)
+        }
+        try {
+            startActivity(ringingIntent)
+        } catch (e: Exception) {
+            // Background-activity-start restrictions can still bite
+            // in edge cases (e.g. an app is killed mid-fire). The
+            // notification's fullScreenIntent is the fallback for
+            // those — the user will see the alarm when they pull
+            // down the notification shade.
+            Log.w(TAG, "Failed to start RingingActivity directly; relying on notification", e)
+        }
     }
 
     private fun buildNotification(label: String, fullScreenIntent: PendingIntent): Notification {

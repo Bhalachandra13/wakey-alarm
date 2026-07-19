@@ -185,10 +185,7 @@ void main() {
     });
 
     test('AlarmTriggerType.fromValue throws on unknown type', () {
-      expect(
-        () => AlarmTriggerType.fromValue('UNKNOWN'),
-        throwsArgumentError,
-      );
+      expect(() => AlarmTriggerType.fromValue('UNKNOWN'), throwsArgumentError);
     });
 
     test('equality works correctly', () {

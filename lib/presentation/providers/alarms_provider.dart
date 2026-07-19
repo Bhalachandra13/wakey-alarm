@@ -124,3 +124,34 @@ final enabledAlarmsProvider = FutureProvider<List<Alarm>>((ref) async {
   final alarmDao = ref.watch(alarmDaoProvider);
   return alarmDao.getEnabledAlarms();
 });
+
+/// The id of the alarm currently ringing, or null if no alarm is ringing.
+///
+/// Subscribes to [AlarmBridge.alarmEvents] and folds the stream into a
+/// single `int?` value:
+///
+/// * `fired(alarmId)` sets the state to `alarmId`.
+/// * `dismissed(alarmId)` and `snoozed(alarmId)` set the state to null.
+///
+/// The provider yields `null` as the initial value (no alarm is ringing
+/// when the app starts), so consumers can `await` its `future` without
+/// having to special-case the pre-fire state.
+///
+/// Because the underlying event stream does not replay past events, this
+/// provider reflects *only* events received while at least one listener
+/// was active. If the user is not in the app when an alarm fires, the
+/// "ringing" state will simply stay at null — which matches user
+/// expectations (they can't see in-app state if the app is closed).
+final ringingAlarmIdProvider = StreamProvider<int?>((ref) async* {
+  final bridge = ref.watch(alarmBridgeProvider);
+  yield null;
+  await for (final event in bridge.alarmEvents) {
+    switch (event.type) {
+      case AlarmEventType.fired:
+        yield event.alarmId;
+      case AlarmEventType.snoozed:
+      case AlarmEventType.dismissed:
+        yield null;
+    }
+  }
+});

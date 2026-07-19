@@ -1,15 +1,19 @@
 import 'package:flutter/services.dart';
 
 class AlarmBridge {
-  const AlarmBridge({MethodChannel? methodChannel, EventChannel? eventChannel})
-    : _methodChannel = methodChannel ?? const MethodChannel(_methodName),
-      _eventChannel = eventChannel ?? const EventChannel(_eventName);
+  const AlarmBridge({
+    MethodChannel? methodChannel,
+    EventChannel? eventChannel,
+    this.eventStream,
+  }) : _methodChannel = methodChannel ?? const MethodChannel(_methodName),
+       _eventChannel = eventChannel ?? const EventChannel(_eventName);
 
   static const _methodName = 'com.wakeywakey/alarm_bridge';
   static const _eventName = 'com.wakeywakey/alarm_events';
 
   final MethodChannel _methodChannel;
   final EventChannel _eventChannel;
+  final Stream<AlarmEvent>? eventStream;
 
   /// Stream of native alarm lifecycle events.
   ///
@@ -25,7 +29,8 @@ class AlarmBridge {
   /// drops the event (which is fine, because nothing would have
   /// been able to render it anyway).
   Stream<AlarmEvent> get alarmEvents {
-    return _eventChannel.receiveBroadcastStream().map(AlarmEvent.fromMap);
+    return eventStream ??
+        _eventChannel.receiveBroadcastStream().map(AlarmEvent.fromMap);
   }
 
   Future<bool> scheduleAlarm(Map<String, Object?> payload) async {
@@ -42,6 +47,24 @@ class AlarmBridge {
       <String, Object?>{'alarmId': alarmId},
     );
     return result?['cancelled'] == true;
+  }
+
+  /// Launch the system ringtone picker so the user can pick an alarm
+  /// sound. Returns the URI of the picked ringtone as a string, or
+  /// `null` if the user cancelled the picker.
+  ///
+  /// [currentUri] is the URI of the alarm's currently-selected
+  /// ringtone (may be `null` if the alarm is new). The native side
+  /// passes it to the picker so the user's current selection is
+  /// highlighted when the picker opens.
+  Future<String?> pickRingtone({String? currentUri}) async {
+    final result = await _methodChannel.invokeMapMethod<String, Object?>(
+      'pickRingtone',
+      <String, Object?>{'currentUri': currentUri},
+    );
+    final uri = result?['uri'];
+    if (uri is String && uri.isNotEmpty) return uri;
+    return null;
   }
 }
 

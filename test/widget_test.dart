@@ -40,6 +40,3 @@ void main() {
     expect(find.text('No timers yet'), findsOneWidget);
   });
 }
-
-
-

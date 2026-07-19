@@ -20,13 +20,14 @@ class _EditAlarmScreenState extends ConsumerState<EditAlarmScreen> {
   late bool _vibrate;
   late int _snoozeDuration;
 
-  final List<String> _weekdays = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
-
-  final List<Map<String, String>> _sounds = [
-    {'name': 'Default Ringtone', 'uri': 'system://default'},
-    {'name': 'Gentle Breeze', 'uri': 'system://gentle_breeze'},
-    {'name': 'Digital Alarm', 'uri': 'system://digital'},
-    {'name': 'Wakey Theme', 'uri': 'system://wakey_theme'},
+  final List<String> _weekdays = [
+    'MON',
+    'TUE',
+    'WED',
+    'THU',
+    'FRI',
+    'SAT',
+    'SUN',
   ];
 
   @override
@@ -47,7 +48,7 @@ class _EditAlarmScreenState extends ConsumerState<EditAlarmScreen> {
       _selectedTime = const TimeOfDay(hour: 7, minute: 0);
       _labelController = TextEditingController(text: 'Alarm');
       _selectedDays = {};
-      _selectedSound = 'system://default';
+      _selectedSound = '';
       _vibrate = true;
       _snoozeDuration = 10;
     }
@@ -81,12 +82,57 @@ class _EditAlarmScreenState extends ConsumerState<EditAlarmScreen> {
     });
   }
 
+  /// Whether a ringtone picker is currently open. We track this to
+  /// disable the "Change" button so the user can't open a second picker
+  /// on top of the first one (the native side rejects the second call).
+  bool _isPickingRingtone = false;
+
+  /// A friendly label for the current sound URI. The native picker
+  /// returns a `content://...` URI; we don't currently resolve those
+  /// to ringtone titles, so we just show a generic label plus a
+  /// truncated URI for non-default selections.
+  String _soundDisplayName(String uri) {
+    if (uri.isEmpty) return 'Default alarm sound';
+    return 'Custom: ...${uri.length > 24 ? uri.substring(uri.length - 24) : uri}';
+  }
+
+  Future<void> _pickRingtone() async {
+    setState(() => _isPickingRingtone = true);
+    try {
+      final bridge = ref.read(alarmBridgeProvider);
+      // Pass the empty string for "use default" so the picker can
+      // pre-select the system default ringtone in that case.
+      final currentForPicker = _selectedSound;
+      final picked = await bridge.pickRingtone(currentUri: currentForPicker);
+      if (!mounted) return;
+      setState(() {
+        // null = user cancelled; empty string isn't currently produced
+        // by the native side, but treat it as "no change" defensively.
+        if (picked != null && picked.isNotEmpty) {
+          _selectedSound = picked;
+        }
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _isPickingRingtone = false);
+      }
+    }
+  }
+
+  void _resetRingtone() {
+    setState(() => _selectedSound = '');
+  }
+
   Future<void> _save() async {
-    final label = _labelController.text.trim().isEmpty ? 'Alarm' : _labelController.text.trim();
+    final label = _labelController.text.trim().isEmpty
+        ? 'Alarm'
+        : _labelController.text.trim();
     final nowIso = DateTime.now().toIso8601String();
-    
+
     // Convert repeat days set to comma-separated string, or null if empty
-    final repeatDaysStr = _selectedDays.isEmpty ? null : _weekdays.where((d) => _selectedDays.contains(d)).join(',');
+    final repeatDaysStr = _selectedDays.isEmpty
+        ? null
+        : _weekdays.where((d) => _selectedDays.contains(d)).join(',');
 
     final alarm = widget.alarm;
     final updatedAlarm = Alarm(
@@ -125,12 +171,7 @@ class _EditAlarmScreenState extends ConsumerState<EditAlarmScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(isEdit ? 'Edit Alarm' : 'Add Alarm'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.check),
-            onPressed: _save,
-          ),
-        ],
+        actions: [IconButton(icon: const Icon(Icons.check), onPressed: _save)],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20.0),
@@ -142,10 +183,16 @@ class _EditAlarmScreenState extends ConsumerState<EditAlarmScreen> {
               child: GestureDetector(
                 onTap: _pickTime,
                 child: Container(
-                  padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 36),
+                  padding: const EdgeInsets.symmetric(
+                    vertical: 24,
+                    horizontal: 36,
+                  ),
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
-                      colors: [theme.colorScheme.primaryContainer, theme.colorScheme.secondaryContainer],
+                      colors: [
+                        theme.colorScheme.primaryContainer,
+                        theme.colorScheme.secondaryContainer,
+                      ],
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
                     ),
@@ -171,12 +218,18 @@ class _EditAlarmScreenState extends ConsumerState<EditAlarmScreen> {
                       Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.edit, size: 16, color: theme.colorScheme.onPrimaryContainer.withAlpha(178)),
+                          Icon(
+                            Icons.edit,
+                            size: 16,
+                            color: theme.colorScheme.onPrimaryContainer
+                                .withAlpha(178),
+                          ),
                           const SizedBox(width: 4),
                           Text(
                             'Tap to change time',
                             style: theme.textTheme.bodyMedium?.copyWith(
-                              color: theme.colorScheme.onPrimaryContainer.withAlpha(178),
+                              color: theme.colorScheme.onPrimaryContainer
+                                  .withAlpha(178),
                             ),
                           ),
                         ],
@@ -207,7 +260,9 @@ class _EditAlarmScreenState extends ConsumerState<EditAlarmScreen> {
                     width: 42,
                     height: 42,
                     decoration: BoxDecoration(
-                      color: isSelected ? theme.colorScheme.primary : theme.colorScheme.surfaceContainerHighest,
+                      color: isSelected
+                          ? theme.colorScheme.primary
+                          : theme.colorScheme.surfaceContainerHighest,
                       shape: BoxShape.circle,
                       boxShadow: isSelected
                           ? [
@@ -215,7 +270,7 @@ class _EditAlarmScreenState extends ConsumerState<EditAlarmScreen> {
                                 color: theme.colorScheme.primary.withAlpha(100),
                                 blurRadius: 6,
                                 offset: const Offset(0, 2),
-                              )
+                              ),
                             ]
                           : null,
                     ),
@@ -223,8 +278,12 @@ class _EditAlarmScreenState extends ConsumerState<EditAlarmScreen> {
                     child: Text(
                       day[0],
                       style: theme.textTheme.bodyMedium?.copyWith(
-                        color: isSelected ? theme.colorScheme.onPrimary : theme.colorScheme.onSurfaceVariant,
-                        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                        color: isSelected
+                            ? theme.colorScheme.onPrimary
+                            : theme.colorScheme.onSurfaceVariant,
+                        fontWeight: isSelected
+                            ? FontWeight.bold
+                            : FontWeight.normal,
                       ),
                     ),
                   ),
@@ -250,7 +309,10 @@ class _EditAlarmScreenState extends ConsumerState<EditAlarmScreen> {
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
                 ),
-                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
               ),
             ),
             const SizedBox(height: 24),
@@ -267,28 +329,30 @@ class _EditAlarmScreenState extends ConsumerState<EditAlarmScreen> {
             Card(
               elevation: 0,
               color: theme.colorScheme.surfaceContainerLow,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
               child: Column(
                 children: [
                   ListTile(
                     leading: const Icon(Icons.music_note),
                     title: const Text('Sound'),
-                    trailing: DropdownButton<String>(
-                      value: _sounds.any((s) => s['uri'] == _selectedSound) ? _selectedSound : 'system://default',
-                      underline: const SizedBox(),
-                      items: _sounds.map((sound) {
-                        return DropdownMenuItem<String>(
-                          value: sound['uri'],
-                          child: Text(sound['name']!),
-                        );
-                      }).toList(),
-                      onChanged: (val) {
-                        if (val != null) {
-                          setState(() {
-                            _selectedSound = val;
-                          });
-                        }
-                      },
+                    subtitle: Text(_soundDisplayName(_selectedSound)),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (_selectedSound.isNotEmpty)
+                          TextButton(
+                            onPressed: _isPickingRingtone
+                                ? null
+                                : _resetRingtone,
+                            child: const Text('Reset'),
+                          ),
+                        TextButton(
+                          onPressed: _isPickingRingtone ? null : _pickRingtone,
+                          child: const Text('Change'),
+                        ),
+                      ],
                     ),
                   ),
                   const Divider(height: 1, indent: 16, endIndent: 16),
@@ -319,7 +383,9 @@ class _EditAlarmScreenState extends ConsumerState<EditAlarmScreen> {
             Card(
               elevation: 0,
               color: theme.colorScheme.surfaceContainerLow,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
               child: ListTile(
                 leading: const Icon(Icons.snooze),
                 title: const Text('Snooze Duration'),
@@ -352,7 +418,9 @@ class _EditAlarmScreenState extends ConsumerState<EditAlarmScreen> {
                     onPressed: () => Navigator.of(context).pop(),
                     style: OutlinedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 16),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                     ),
                     child: const Text('Cancel'),
                   ),
@@ -365,7 +433,9 @@ class _EditAlarmScreenState extends ConsumerState<EditAlarmScreen> {
                       backgroundColor: theme.colorScheme.primary,
                       foregroundColor: theme.colorScheme.onPrimary,
                       padding: const EdgeInsets.symmetric(vertical: 16),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                       elevation: 0,
                     ),
                     child: const Text('Save'),

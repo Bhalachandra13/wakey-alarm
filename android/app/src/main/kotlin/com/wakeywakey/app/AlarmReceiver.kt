@@ -18,20 +18,43 @@ import android.util.Log
  *     matching day-of-week and re-calling [AlarmScheduler.schedule].
  *     A "MON,WED,FRI" alarm keeps firing on every subsequent matching
  *     day without any user action.
- *  3. **Clean up one-shot alarms** by calling [AlarmScheduler.cancel]
- *     — without this, a one-shot alarm would remain in
- *     SharedPreferences and [BootReceiver] would resurrect it after
- *     a reboot.
+ *  3. **Clean up one-shot alarms** — but only on a *natural* fire,
+ *     not a snooze follow-up. The natural fire is the only point
+ *     where we know the alarm has actually reached its scheduled
+ *     time. Snooze fires are managed by [RingingActivity], which
+ *     schedules them and increments [AlarmData.currentSnoozeCount]
+ *     itself; the receiver stays out of the way.
  *
  * The data the receiver needs for (2) and (3) is carried in the
  * Intent extras of the firing PendingIntent, which were populated
- * by [AlarmScheduler.buildFireIntent] at schedule time.
+ * by [AlarmScheduler.buildFireIntent] at schedule time. The
+ * [EXTRA_IS_SNOOZE_FIRE] extra is the discriminator that tells the
+ * receiver which kind of fire is happening.
  */
 class AlarmReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         val alarmId = intent.getIntExtra(EXTRA_ALARM_ID, -1)
-        Log.d(TAG, "AlarmReceiver.onReceive – alarmId=$alarmId")
+        val isSnoozeFire = intent.getBooleanExtra(EXTRA_IS_SNOOZE_FIRE, false)
+        Log.d(TAG, "AlarmReceiver.onReceive – alarmId=$alarmId isSnoozeFire=$isSnoozeFire")
+
+        // Emit a `fired` event to the Dart side so the in-app UI can
+        // react (e.g. show an "alarm is ringing" indicator). No-op if
+        // no Dart listener is attached — the event is silently dropped,
+        // which is fine because nothing in the UI could render it
+        // anyway when the app is cold-started by this broadcast.
+        if (alarmId >= 0) {
+            AlarmEventBus.emit(
+                mapOf(
+                    "alarmId" to alarmId,
+                    "type" to "fired",
+                    // Iteration 1 only schedules time-based alarms via
+                    // AlarmManager; geofence-driven fires arrive through
+                    // a separate path in Iteration 4.
+                    "triggerType" to "time",
+                ),
+            )
+        }
 
         // (1) Hand off to AlarmService. Must be foreground on API 26+
         // because background services are killed almost immediately.
@@ -42,6 +65,7 @@ class AlarmReceiver : BroadcastReceiver() {
             putExtra(EXTRA_VIBRATE, intent.getBooleanExtra(EXTRA_VIBRATE, true))
             putExtra(EXTRA_SNOOZE_DURATION_MIN, intent.getIntExtra(EXTRA_SNOOZE_DURATION_MIN, 10))
             putExtra(EXTRA_MAX_SNOOZE_COUNT, intent.getIntExtra(EXTRA_MAX_SNOOZE_COUNT, -1))
+            putExtra(EXTRA_IS_SNOOZE_FIRE, isSnoozeFire)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             context.startForegroundService(serviceIntent)
@@ -49,9 +73,17 @@ class AlarmReceiver : BroadcastReceiver() {
             context.startService(serviceIntent)
         }
 
-        // (2) and (3): re-schedule or clean up.
+        // (2) and (3): re-schedule or clean up. SKIPPED for snooze
+        // fires — the RingingActivity is in charge of those, and the
+        // persisted currentSnoozeCount is already correct. The only
+        // thing the receiver does for a snooze fire is start the
+        // service and emit the fired event above.
         if (alarmId < 0) {
             Log.w(TAG, "Skipping self-reschedule: missing alarmId")
+            return
+        }
+        if (isSnoozeFire) {
+            Log.d(TAG, "Snooze fire; leaving schedule and persistence to RingingActivity")
             return
         }
         rescheduleOrCleanup(context, intent, alarmId)
@@ -60,17 +92,26 @@ class AlarmReceiver : BroadcastReceiver() {
     private fun rescheduleOrCleanup(context: Context, intent: Intent, alarmId: Int) {
         val repeatDays = intent.getStringExtra(EXTRA_REPEAT_DAYS)
         if (repeatDays.isNullOrBlank()) {
-            // One-shot: remove from persistence so BootReceiver does
-            // not resurrect this alarm after a future reboot.
-            Log.d(TAG, "One-shot alarm fired; removing from persistence")
-            AlarmScheduler.cancel(context, alarmId)
+            // One-shot natural fire: leave the data and PendingIntent
+            // alone here. RingingActivity's dismiss handler will call
+            // AlarmScheduler.cancel to clean up if the user dismisses;
+            // and if the user snoozes, RingingActivity will re-persist
+            // (with an incremented currentSnoozeCount) and re-schedule
+            // the follow-up snooze fire. Cancelling here would erase
+            // the data before RingingActivity could read it, which
+            // broke one-shot snooze entirely in earlier iterations.
+            Log.d(TAG, "One-shot alarm fired; awaiting RingingActivity dismiss/snooze")
             return
         }
 
-        // Repeating: rebuild the AlarmData from the intent extras
-        // and schedule the next occurrence. NextAlarmTime.compute
-        // walks forward up to 7 days to find the soonest matching
-        // day-of-week.
+        // Repeating natural fire: rebuild the AlarmData from the
+        // intent extras and schedule the next occurrence.
+        // NextAlarmTime.compute walks forward up to 7 days to find
+        // the soonest matching day-of-week.
+        //
+        // Reset the snooze counter to 0 here so the user gets a
+        // fresh `maxSnoozeCount` for the next fire cycle, regardless
+        // of how many times they snoozed the current one.
         val data = AlarmScheduler.AlarmData(
             alarmId = alarmId,
             timeHour = intent.getIntExtra(EXTRA_TIME_HOUR, 0),
@@ -81,6 +122,7 @@ class AlarmReceiver : BroadcastReceiver() {
             vibrate = intent.getBooleanExtra(EXTRA_VIBRATE, true),
             snoozeDurationMin = intent.getIntExtra(EXTRA_SNOOZE_DURATION_MIN, 10),
             maxSnoozeCount = intent.getIntExtra(EXTRA_MAX_SNOOZE_COUNT, -1),
+            currentSnoozeCount = 0,
         )
         val nextTrigger = NextAlarmTime.compute(
             data.timeHour,
@@ -105,5 +147,10 @@ class AlarmReceiver : BroadcastReceiver() {
         const val EXTRA_TIME_HOUR = "timeHour"
         const val EXTRA_TIME_MINUTE = "timeMinute"
         const val EXTRA_REPEAT_DAYS = "repeatDays"
+        // Discriminates between a natural fire (the alarm reached its
+        // scheduled time) and a snooze follow-up fire (scheduled by
+        // RingingActivity when the user tapped snooze). See the
+        // class-level comment for the full state machine.
+        const val EXTRA_IS_SNOOZE_FIRE = "isSnoozeFire"
     }
 }

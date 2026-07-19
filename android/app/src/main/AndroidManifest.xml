@@ -77,6 +77,20 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+        <!-- Receives the broadcast fired by AlarmManager.setAlarmClock().
+             MUST be declared in the manifest (not just instantiated
+             dynamically) so the system can deliver the broadcast to
+             AlarmReceiver even when the app process is dead — which is
+             the normal state when an alarm fires. exported=true is
+             required because the broadcast is delivered by the system,
+             not by our own code. The PendingIntent itself uses
+             FLAG_IMMUTABLE, so a forged intent cannot hijack the
+             scheduled time; an attacker would just be able to trigger
+             the alarm UI out of schedule. -->
+        <receiver
+            android:name=".AlarmReceiver"
+            android:enabled="true"
+            android:exported="true" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

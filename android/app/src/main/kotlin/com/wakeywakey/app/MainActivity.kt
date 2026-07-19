@@ -1,12 +1,14 @@
 package com.wakeywakey.app
 
 import android.Manifest
+import android.app.Activity
 import android.app.AlarmManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
 import android.util.Log
@@ -18,6 +20,7 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     private var alarmEventSink: EventChannel.EventSink? = null
     private var pendingNotificationResult: MethodChannel.Result? = null
+    private var pendingPickRingtoneResult: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -38,6 +41,12 @@ class MainActivity : FlutterActivity() {
                     @Suppress("UNCHECKED_CAST")
                     val payload = (call.arguments as? Map<String, Any?>) ?: emptyMap()
                     handleCancelAlarm(payload, result)
+                }
+
+                "pickRingtone" -> {
+                    @Suppress("UNCHECKED_CAST")
+                    val payload = (call.arguments as? Map<String, Any?>) ?: emptyMap()
+                    handlePickRingtone(payload, result)
                 }
 
                 else -> result.notImplemented()
@@ -220,6 +229,12 @@ class MainActivity : FlutterActivity() {
             vibrate = (payload["vibrate"] as? Boolean) ?: true,
             snoozeDurationMin = (payload["snoozeDurationMin"] as? Number)?.toInt() ?: 10,
             maxSnoozeCount = (payload["maxSnoozeCount"] as? Number)?.toInt() ?: -1,
+            // Dart-initiated schedules are always the start of a
+            // fresh fire cycle, so reset the snooze counter to 0
+            // here. Without this, an alarm whose user reached the
+            // snooze limit and then re-enabled from the UI would
+            // still see the old counter carried over.
+            currentSnoozeCount = 0,
         )
         val triggerAtMillis = NextAlarmTime.compute(hour, minute, data.repeatDays)
 
@@ -249,6 +264,86 @@ class MainActivity : FlutterActivity() {
         result.success(mapOf("cancelled" to true))
     }
 
+    // -------------------------------------------------------------------------
+    // Ringtone picker
+    // -------------------------------------------------------------------------
+
+    /**
+     * Launch the system ringtone picker (filtered to alarm sounds) and
+     * report the picked URI back to Dart.
+     *
+     * Payload:
+     *  - `currentUri`: String? — the alarm's currently-selected ringtone,
+     *    so the picker can pre-select it. May be null for new alarms.
+     *
+     * Result:
+     *  - `{ "uri": String }` on success (the picked URI as a string,
+     *    or null/empty if the user cancelled).
+     *
+     * Implementation notes:
+     *  - Uses `startActivityForResult` because the picker returns its
+     *    selection via `onActivityResult` (the modern `ActivityResultLauncher`
+     *    API would be cleaner but requires registering in `onCreate`,
+     *    which interacts awkwardly with the `FlutterActivity` lifecycle).
+     *  - Only one picker can be active at a time; if a second
+     *    `pickRingtone` call arrives while a previous one is still open,
+     *    it returns an error rather than queueing.
+     */
+    private fun handlePickRingtone(payload: Map<String, Any?>, result: MethodChannel.Result) {
+        if (pendingPickRingtoneResult != null) {
+            result.error(
+                "ringtone_picker_active",
+                "A ringtone picker is already active.",
+                null,
+            )
+            return
+        }
+
+        val currentUriString = payload["currentUri"] as? String
+        val currentUri = if (currentUriString.isNullOrBlank()) {
+            null
+        } else {
+            runCatching { Uri.parse(currentUriString) }.getOrNull()
+        }
+
+        val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
+            putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_ALARM)
+            putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "Choose alarm sound")
+            putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
+            putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, currentUri)
+        }
+
+        pendingPickRingtoneResult = result
+        try {
+            startActivityForResult(intent, PICK_RINGTONE_REQUEST_CODE)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start ringtone picker", e)
+            pendingPickRingtoneResult = null
+            result.success(mapOf("uri" to null, "error" to "picker_unavailable"))
+        }
+    }
+
+    @Deprecated("Required to support startActivityForResult on API levels where the new Activity Result API is not viable.")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != PICK_RINGTONE_REQUEST_CODE) return
+
+        val pending = pendingPickRingtoneResult
+        pendingPickRingtoneResult = null
+        if (pending == null) return
+
+        if (resultCode != Activity.RESULT_OK) {
+            pending.success(mapOf("uri" to null))
+            return
+        }
+
+        val pickedUri: Uri? = data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+        // A null URI here means the user picked "Silent" — represent that
+        // as an empty string so the Dart side can distinguish it from
+        // "user cancelled" (which we already handled above).
+        pending.success(mapOf("uri" to (pickedUri?.toString() ?: "")))
+    }
+
     companion object {
         private const val TAG = "WakeyAlarmBridge"
         private const val ALARM_BRIDGE_CHANNEL = "com.wakeywakey/alarm_bridge"
@@ -256,5 +351,6 @@ class MainActivity : FlutterActivity() {
         private const val PERMISSIONS_CHANNEL = "com.wakeywakey/permissions"
         private const val ALARM_NOTIFICATION_CHANNEL_ID = "alarm_alerts"
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1001
+        private const val PICK_RINGTONE_REQUEST_CODE = 2001
     }
 }

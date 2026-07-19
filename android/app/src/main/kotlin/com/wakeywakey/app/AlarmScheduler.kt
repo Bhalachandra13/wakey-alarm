@@ -49,6 +49,15 @@ object AlarmScheduler {
      * Canonical description of an alarm. Anything the alarm
      * pipeline needs to re-schedule it (without going through the
      * Dart side) lives here.
+     *
+     * [currentSnoozeCount] tracks how many times the user has
+     * snoozed the alarm within the current fire cycle. It is
+     * incremented by [RingingActivity] on every snooze tap and
+     * reset to 0 whenever a new fire cycle starts (Dart-initiated
+     * schedule, or the receiver's self-reschedule for a repeating
+     * alarm, or a post-reboot reschedule). Enforcing the limit
+     * is also done in [RingingActivity] (see
+     * `scheduleSnooze`).
      */
     data class AlarmData(
         val alarmId: Int,
@@ -64,6 +73,34 @@ object AlarmScheduler {
         val vibrate: Boolean,
         val snoozeDurationMin: Int,
         val maxSnoozeCount: Int,
+        val currentSnoozeCount: Int = 0,
+        /**
+         * Marks the fire PendingIntent as a "snooze" fire (i.e. a
+         * follow-up fire scheduled by [RingingActivity] when the
+         * user taps snooze, NOT the natural alarm time).
+         *
+         * The receiver uses this to distinguish between:
+         *  - **natural fire** (`false`, the default): the alarm
+         *    reached its scheduled time. The receiver is
+         *    responsible for the cleanup (cancel one-shots,
+         *    re-schedule the next natural occurrence for repeats,
+         *    and reset [currentSnoozeCount] to 0 for the new
+         *    fire cycle).
+         *  - **snooze fire** (`true`): a transient follow-up fire
+         *    scheduled by the snooze button. The receiver does
+         *    nothing for these — the persisted
+         *    [currentSnoozeCount] is already correct, and the
+         *    [RingingActivity] is already aware of the next
+         *    snooze fire (or the natural fire for repeating
+         *    alarms, which the previous natural fire already
+         *    scheduled).
+         *
+         * NOT persisted to SharedPreferences. A snooze fire is
+         * transient by definition — if the app is rebooted
+         * mid-snooze, the BootReceiver re-arms the alarm at its
+         * natural time, which is the correct behavior.
+         */
+        val isSnoozeFire: Boolean = false,
     ) {
         val isRepeating: Boolean
             get() = !repeatDays.isNullOrBlank()
@@ -77,12 +114,19 @@ object AlarmScheduler {
      * Schedule an alarm to fire at [triggerAtMillis] and persist the
      * metadata to SharedPreferences.
      *
+     * @param data The alarm metadata. Pass `data.copy(isSnoozeFire = true)`
+     *   when scheduling a snooze follow-up fire from [RingingActivity];
+     *   all other call sites (Dart-initiated schedule, receiver's
+     *   self-reschedule for repeats, BootReceiver) use the default
+     *   `isSnoozeFire = false` because they are scheduling the alarm's
+     *   natural fire time.
      * @return true if `setAlarmClock` returned successfully.
      */
     fun schedule(
         context: Context,
         data: AlarmData,
         triggerAtMillis: Long,
+        isSnoozeFire: Boolean = false,
     ): Boolean {
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
             ?: run {
@@ -90,10 +134,11 @@ object AlarmScheduler {
                 return false
             }
 
+        val dataWithFlag = if (isSnoozeFire) data.copy(isSnoozeFire = true) else data
         val firePendingIntent = PendingIntent.getBroadcast(
             context,
             data.alarmId,
-            buildFireIntent(context, data),
+            buildFireIntent(context, dataWithFlag),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val showPendingIntent = PendingIntent.getActivity(
@@ -124,13 +169,16 @@ object AlarmScheduler {
     fun cancel(context: Context, alarmId: Int) {
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
         if (alarmManager != null) {
-            // Reconstruct an Intent with the same component used at
-            // schedule time. Extras don't matter for equality
-            // (PendingIntent.filterEquals ignores them).
+            // Reconstruct an Intent with the SAME identity used at
+            // schedule time: action + per-alarm data URI. Extras
+            // don't matter for PendingIntent.filterEquals equality.
             val existing = PendingIntent.getBroadcast(
                 context,
                 alarmId,
-                Intent(context, AlarmReceiver::class.java),
+                Intent(context, AlarmReceiver::class.java).apply {
+                    action = ACTION_FIRE_ALARM
+                    data = Uri.parse("$SCHEME_ALARM://$URI_HOST_ALARM/$alarmId")
+                },
                 PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
             )
             if (existing != null) {
@@ -181,18 +229,24 @@ object AlarmScheduler {
      * time" by [NextAlarmTime.compute], which is a reasonable
      * fallback for a one-shot that the user expected to ring while
      * the device was off.
+     *
+     * Each alarm's snooze counter is reset to 0 before rescheduling:
+     * after a reboot, the user should get a fresh `maxSnoozeCount`
+     * for the next fire, regardless of where the previous fire
+     * cycle left off.
      */
     fun rescheduleAllPersisted(context: Context): Int {
         val all = readAllPersisted(context)
         Log.d(TAG, "Boot: re-scheduling ${all.size} persisted alarms")
         var ok = 0
         for (data in all) {
+            val fresh = data.copy(currentSnoozeCount = 0)
             val triggerAtMillis = NextAlarmTime.compute(
-                data.timeHour,
-                data.timeMinute,
-                data.repeatDays,
+                fresh.timeHour,
+                fresh.timeMinute,
+                fresh.repeatDays,
             )
-            if (schedule(context, data, triggerAtMillis)) ok++
+            if (schedule(context, fresh, triggerAtMillis)) ok++
         }
         return ok
     }
@@ -223,6 +277,7 @@ object AlarmScheduler {
             putExtra(AlarmReceiver.EXTRA_VIBRATE, data.vibrate)
             putExtra(AlarmReceiver.EXTRA_SNOOZE_DURATION_MIN, data.snoozeDurationMin)
             putExtra(AlarmReceiver.EXTRA_MAX_SNOOZE_COUNT, data.maxSnoozeCount)
+            putExtra(AlarmReceiver.EXTRA_IS_SNOOZE_FIRE, data.isSnoozeFire)
         }
     }
 
@@ -307,6 +362,7 @@ object AlarmScheduler {
         put("vibrate", d.vibrate)
         put("snoozeDurationMin", d.snoozeDurationMin)
         put("maxSnoozeCount", d.maxSnoozeCount)
+        put("currentSnoozeCount", d.currentSnoozeCount)
     }
 
     private fun fromJson(o: JSONObject): AlarmData = AlarmData(
@@ -319,5 +375,8 @@ object AlarmScheduler {
         vibrate = o.optBoolean("vibrate", true),
         snoozeDurationMin = o.optInt("snoozeDurationMin", 10),
         maxSnoozeCount = o.optInt("maxSnoozeCount", -1),
+        // Default to 0 so alarms persisted before this field was
+        // added don't get a confusing initial snooze count.
+        currentSnoozeCount = o.optInt("currentSnoozeCount", 0),
     )
 }

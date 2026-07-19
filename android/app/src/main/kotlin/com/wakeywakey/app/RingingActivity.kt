@@ -57,9 +57,7 @@ class RingingActivity : Activity() {
         val soundUri = intent.getStringExtra(AlarmReceiver.EXTRA_SOUND_URI) ?: ""
         val vibrate = intent.getBooleanExtra(AlarmReceiver.EXTRA_VIBRATE, true)
         val snoozeDurationMin = intent.getIntExtra(AlarmReceiver.EXTRA_SNOOZE_DURATION_MIN, 10)
-        // EXTRA_MAX_SNOOZE_COUNT is intentionally not enforced yet — that
-        // requires a persisted snooze counter (DB or SharedPreferences)
-        // and is handled in a follow-up task.
+        val maxSnoozeCount = intent.getIntExtra(AlarmReceiver.EXTRA_MAX_SNOOZE_COUNT, -1)
 
         setContentView(R.layout.activity_ringing)
 
@@ -69,14 +67,23 @@ class RingingActivity : Activity() {
 
         findViewById<Button>(R.id.snooze_button).setOnClickListener {
             Log.d(TAG, "Snooze tapped for alarmId=$alarmId")
-            scheduleSnooze(alarmId, snoozeDurationMin)
+            val snoozed = scheduleSnooze(alarmId, snoozeDurationMin, maxSnoozeCount)
             stopAlarmService()
-            emitOutcome("snoozed")
+            // If the user has hit max snoozes, the tap is reported
+            // as a dismiss so the Dart side clears any "ringing"
+            // state correctly. Otherwise it goes through as a snooze.
+            emitOutcome(if (snoozed) "snoozed" else "dismissed")
             finish()
         }
 
         findViewById<Button>(R.id.dismiss_button).setOnClickListener {
             Log.d(TAG, "Dismiss tapped for alarmId=$alarmId")
+            // Clean up the alarm's persisted data and PendingIntent
+            // BEFORE stopping the service, so the next natural fire
+            // (for repeats) is queued up before the system can deliver
+            // a fresh broadcast from any other source. See
+            // [dismissAlarm] for the full reasoning.
+            dismissAlarm(alarmId)
             stopAlarmService()
             emitOutcome("dismissed")
             finish()
@@ -98,24 +105,120 @@ class RingingActivity : Activity() {
     /**
      * Re-schedule the same alarm for [snoozeDurationMin] minutes
      * from now. Reads the persisted [AlarmScheduler.AlarmData]
-     * (which carries the sound, label, vibrate, repeatDays, etc.)
-     * and delegates to [AlarmScheduler.schedule] so the snoozed
-     * alarm is visible to [BootReceiver] on the next reboot.
+     * (which carries the sound, label, vibrate, repeatDays, and
+     * the running snooze counter) and delegates to
+     * [AlarmScheduler.schedule] so the snoozed alarm is visible
+     * to [BootReceiver] on the next reboot.
+     *
+     * Enforces [maxSnoozeCount] against the persisted
+     * [AlarmData.currentSnoozeCount]:
+     *  - `maxSnoozeCount < 0` (the sentinel for "unlimited")
+     *    always allows the snooze.
+     *  - Otherwise, once `currentSnoozeCount` has reached the
+     *    limit, the function logs and returns `false` without
+     *    rescheduling. The caller treats this as a dismiss.
+     *
+     * @return true if the snooze was actually scheduled, false if
+     *   the user has already hit the limit (caller should emit a
+     *   "dismissed" event in that case).
      */
-    private fun scheduleSnooze(alarmId: Int, snoozeDurationMin: Int) {
+    private fun scheduleSnooze(
+        alarmId: Int,
+        snoozeDurationMin: Int,
+        maxSnoozeCount: Int,
+    ): Boolean {
         if (alarmId < 0) {
             Log.w(TAG, "Cannot snooze: missing alarmId in intent")
-            return
+            return false
         }
 
         val data = AlarmScheduler.readPersisted(this, alarmId)
         if (data == null) {
             Log.w(TAG, "Cannot snooze: no persisted AlarmData for id=$alarmId")
-            return
+            return false
         }
 
+        if (maxSnoozeCount >= 0 && data.currentSnoozeCount >= maxSnoozeCount) {
+            Log.w(
+                TAG,
+                "Snooze blocked: alarmId=$alarmId current=${data.currentSnoozeCount} " +
+                    "max=$maxSnoozeCount (treating as dismiss)",
+            )
+            return false
+        }
+
+        val nextCount = data.currentSnoozeCount + 1
+        val incremented = data.copy(currentSnoozeCount = nextCount)
         val triggerTime = System.currentTimeMillis() + snoozeDurationMin * 60_000L
-        AlarmScheduler.schedule(this, data, triggerTime)
+        // isSnoozeFire=true is what tells AlarmReceiver, on the
+        // follow-up fire, to leave both the persisted count and the
+        // next-occurrence scheduling alone. Without this flag, the
+        // receiver would either cancel the one-shot or reset the
+        // snooze count back to 0 — both wrong.
+        AlarmScheduler.schedule(this, incremented, triggerTime, isSnoozeFire = true)
+        return true
+    }
+
+    // -------------------------------------------------------------------------
+    // Dismiss
+    // -------------------------------------------------------------------------
+
+    /**
+     * Clean up the alarm's persisted data and pending PendingIntent
+     * when the user taps Dismiss.
+     *
+     * Two cases, depending on whether the alarm is a one-shot or
+     * a repeating alarm:
+     *
+     *  - **One-shot**: call [AlarmScheduler.cancel], which removes
+     *    the persisted record AND cancels the PendingIntent. This is
+     *    the only place one-shots get removed from persistence now —
+     *    the receiver deliberately leaves the data alone on a natural
+     *    fire so that the user can still snooze it (the snooze path
+     *    needs the persisted data to read the current snooze count).
+     *
+     *  - **Repeating**: re-schedule the next *natural* fire (using
+     *    [NextAlarmTime.compute] on the persisted data) with
+     *    [AlarmData.currentSnoozeCount] reset to 0, then persist it.
+     *    The snooze fire that the receiver just delivered is gone;
+     *    the user has chosen to stop the current ringing cycle, and
+     *    the next alarm should fire at the next matching day-of-week
+     *    with a fresh snooze budget. Cancelling outright would lose
+     *    the alarm entirely until the user re-enables it manually.
+     *
+     * If the persisted data is gone (e.g. a one-shot whose
+     * AlarmScheduler.schedule was never called), the cancel call
+     * is a safe no-op and we just log.
+     */
+    private fun dismissAlarm(alarmId: Int) {
+        if (alarmId < 0) {
+            Log.w(TAG, "Cannot dismiss: missing alarmId in intent")
+            return
+        }
+        val data = AlarmScheduler.readPersisted(this, alarmId)
+        if (data == null) {
+            // Already cancelled (e.g. one-shot that was cleaned up
+            // before the activity was created), or never persisted.
+            // Nothing to do.
+            Log.d(TAG, "Dismiss: no persisted data for id=$alarmId (already clean)")
+            return
+        }
+        if (data.isRepeating) {
+            val fresh = data.copy(currentSnoozeCount = 0)
+            val nextTrigger = NextAlarmTime.compute(
+                fresh.timeHour,
+                fresh.timeMinute,
+                fresh.repeatDays,
+            )
+            val ok = AlarmScheduler.schedule(this, fresh, nextTrigger)
+            Log.d(
+                TAG,
+                "Dismiss: repeating alarm re-scheduled id=$alarmId next=$nextTrigger ok=$ok",
+            )
+        } else {
+            AlarmScheduler.cancel(this, alarmId)
+            Log.d(TAG, "Dismiss: one-shot alarm cancelled id=$alarmId")
+        }
     }
 
     // -------------------------------------------------------------------------
