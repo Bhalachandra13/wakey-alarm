@@ -1,12 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-import 'package:wakey_alarm/data/alarm_dao.dart';
 import 'package:wakey_alarm/data/wakey_database.dart';
 import 'package:wakey_alarm/domain/alarm.dart';
+import 'package:wakey_alarm/native_bridge/alarm_bridge.dart';
 import 'package:wakey_alarm/presentation/providers/alarms_provider.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   setUpAll(() {
     sqfliteFfiInit();
   });
@@ -38,17 +42,33 @@ void main() {
   group('Alarms Riverpod providers', () {
     late WakeyDatabase database;
     late ProviderContainer container;
+    late _FakeAlarmBridge fakeBridge;
 
     setUp(() async {
+      fakeBridge = _FakeAlarmBridge();
+      addTearDown(fakeBridge.eventController.close);
+
       database = WakeyDatabase(
         databaseFactory: databaseFactoryFfi,
         databasePath: ':memory:',
       );
       await database.open();
 
-      // Override database provider with in-memory instance
+      // Override database provider with in-memory instance, and the
+      // AlarmBridge with a fake so the notifier's build() can listen
+      // to the event stream and the scheduler can call scheduleAlarm /
+      // cancelAlarm without hitting the missing native MethodChannel.
+      // Also override alarmEventsProvider to emit nothing — the notifier
+      // only cares about snoozed/dismissed events and none of these tests
+      // exercise that path. A never-completing broadcast stream would
+      // otherwise keep the test isolate alive past the test function
+      // returning, causing a spurious 30s timeout.
       container = ProviderContainer(
-        overrides: [databaseProvider.overrideWithValue(database)],
+        overrides: [
+          databaseProvider.overrideWithValue(database),
+          alarmBridgeProvider.overrideWithValue(fakeBridge),
+          alarmEventsProvider.overrideWith((ref) => const Stream.empty()),
+        ],
       );
     });
 
@@ -183,7 +203,7 @@ void main() {
       final notifier = container.read(alarmsNotifierProvider.notifier);
 
       final alarm = createTestAlarm(label: 'Original');
-      final id = await dao.insert(alarm);
+      await dao.insert(alarm);
 
       // Refresh provider
       await notifier.refresh();
@@ -193,4 +213,20 @@ void main() {
       expect(alarms[0].label, equals('Original'));
     });
   });
+}
+
+class _FakeAlarmBridge implements AlarmBridge {
+  _FakeAlarmBridge()
+    : eventController = StreamController<AlarmEvent>.broadcast();
+  final StreamController<AlarmEvent> eventController;
+  @override
+  Stream<AlarmEvent>? eventStream;
+  @override
+  Stream<AlarmEvent> get alarmEvents => eventController.stream;
+  @override
+  Future<bool> scheduleAlarm(Map<String, Object?> payload) async => true;
+  @override
+  Future<bool> cancelAlarm(int alarmId) async => true;
+  @override
+  Future<String?> pickRingtone({String? currentUri}) async => null;
 }

@@ -257,8 +257,9 @@ void main() {
       // Pump until the banner shows.
       for (var i = 0; i < 30; i++) {
         await tester.pump(const Duration(milliseconds: 20));
-        if (find.byIcon(Icons.notifications_active).evaluate().isNotEmpty)
+        if (find.byIcon(Icons.notifications_active).evaluate().isNotEmpty) {
           break;
+        }
       }
       expect(find.byIcon(Icons.notifications_active), findsOneWidget);
       expect(find.textContaining('Ringing now'), findsOneWidget);
@@ -290,8 +291,9 @@ void main() {
       );
       for (var i = 0; i < 30; i++) {
         await tester.pump(const Duration(milliseconds: 20));
-        if (find.byIcon(Icons.notifications_active).evaluate().isNotEmpty)
+        if (find.byIcon(Icons.notifications_active).evaluate().isNotEmpty) {
           break;
+        }
       }
       expect(find.byIcon(Icons.notifications_active), findsOneWidget);
 
@@ -300,7 +302,9 @@ void main() {
       );
       for (var i = 0; i < 30; i++) {
         await tester.pump(const Duration(milliseconds: 20));
-        if (find.byIcon(Icons.notifications_active).evaluate().isEmpty) break;
+        if (find.byIcon(Icons.notifications_active).evaluate().isEmpty) {
+          break;
+        }
       }
       expect(find.byIcon(Icons.notifications_active), findsNothing);
     });

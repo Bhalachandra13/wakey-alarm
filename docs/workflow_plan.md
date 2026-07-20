@@ -190,19 +190,27 @@ These are explicitly **not** blocking Iter 1 closure. They are on
 the Iter 2 (or later) follow-up list and are documented here for
 visibility:
 
-1. **Snooze max-count not enforced.** A user can snooze an
-   arbitrary number of times. Needs a persisted snooze counter
-   that RingingActivity reads before re-scheduling.
+1. **Snooze max-count not enforced in the UI.** The native side
+   now reads and enforces `maxSnoozeCount` via the persisted
+   `currentSnoozeCount` in `RingingActivity.scheduleSnooze` — once
+   the limit is hit, the snooze tap is reported as a dismiss.
+   However, `EditAlarmScreen` still does not expose a control to
+   configure the limit; it only exposes `snoozeDurationMin`. Adding
+   the UI picker is an Iter 2 task.
 2. **No alarm sound picker UI.** The native side plays
-   `RingtoneManager.getDefaultUri(TYPE_ALARM)`. Adding a sound
+   `RingtoneManager.getDefaultUri(TYPE_ALARM)`. The Dart side
+   already has a `pickRingtone` MethodChannel (covered by
+   `test/native_bridge/alarm_bridge_pick_ringtone_test.dart`),
+   but it is not yet wired into `EditAlarmScreen`. Adding the
    picker is a UI task in Iter 2.
-3. **No Dart-side consumer of the `alarmEvents` stream.** The
-   `AlarmEventBus` is wired up end-to-end (RingingActivity →
-   MainActivity → Dart), but the `AlarmsNotifier` does not yet
-   subscribe. Adding a `ringingAlarmIdProvider` is a one-method
-   change and is a natural Iter 1.5 / 2 task. This does not
-   affect alarm firing — it only affects whether the in-app UI
-   can show "this alarm is currently ringing" state.
+
+> Previously listed here: "No Dart-side consumer of the
+> `alarmEvents` stream" — **resolved** in commit `550ae30`
+> (BUG E from
+> `.github/history/2026-07-20-1200_iter1-bug-registry.md`).
+> Both `ringingAlarmIdProvider` and `AlarmsNotifier` now consume
+> the EventChannel, and dismiss/snooze outcomes are mirrored into
+> the sqflite database.
 
 ---
 

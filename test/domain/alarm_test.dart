@@ -4,7 +4,6 @@ import 'package:wakey_alarm/domain/alarm.dart';
 void main() {
   group('Alarm', () {
     test('creates an alarm with required fields', () {
-      final now = DateTime.now().toIso8601String();
       const alarm = Alarm(
         label: 'Morning Alarm',
         triggerType: AlarmTriggerType.time,
