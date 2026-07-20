@@ -1,9 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'providers/alarms_provider.dart';
 import 'providers/app_providers.dart';
+import 'providers/stopwatch_provider.dart';
+import 'providers/timers_provider.dart';
 import 'screens/alarms_screen.dart';
 import 'screens/edit_alarm_screen.dart';
+import 'screens/stopwatch_screen.dart';
+import 'screens/timer_screen.dart';
 
 class WakeyAlarmApp extends StatelessWidget {
   const WakeyAlarmApp({super.key});
@@ -53,14 +58,21 @@ class _AppShellState extends ConsumerState<AppShell> {
     ref.watch(alarmsProvider);
     ref.watch(timersProvider);
     ref.watch(permissionStatusProvider);
+    // Stopwatch has no async data — just keep the provider alive so
+    // the notifier stays hot between tab switches. The notifier's
+    // internal Timer (if any) is the only real consumer.
+    ref.watch(stopwatchProvider);
 
     final selectedTab = _tabs[_selectedIndex];
 
     return Scaffold(
       appBar: AppBar(title: Text(selectedTab.title)),
-      body: _selectedIndex == 0
-          ? const AlarmsScreen()
-          : _EmptyTabView(tab: selectedTab),
+      body: switch (_selectedIndex) {
+        0 => const AlarmsScreen(),
+        1 => const StopwatchScreen(),
+        2 => const TimerScreen(),
+        _ => _EmptyTabView(tab: selectedTab),
+      },
       floatingActionButton: _selectedIndex == 0
           ? FloatingActionButton(
               onPressed: () {

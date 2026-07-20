@@ -1,12 +1,21 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wakey_alarm/domain/alarm.dart';
+import 'package:wakey_alarm/domain/timer_record.dart';
 import 'package:wakey_alarm/presentation/app.dart';
 import 'package:wakey_alarm/presentation/providers/alarms_provider.dart';
+import 'package:wakey_alarm/presentation/providers/timers_provider.dart';
 
 class MockAlarmsNotifier extends AlarmsNotifier {
   @override
   Future<List<Alarm>> build() async {
+    return const [];
+  }
+}
+
+class MockTimersNotifier extends TimersNotifier {
+  @override
+  Future<List<TimerRecord>> build() async {
     return const [];
   }
 }
@@ -17,6 +26,7 @@ void main() {
       ProviderScope(
         overrides: [
           alarmsNotifierProvider.overrideWith(() => MockAlarmsNotifier()),
+          timersProvider.overrideWith(() => MockTimersNotifier()),
         ],
         child: const WakeyAlarmApp(),
       ),
