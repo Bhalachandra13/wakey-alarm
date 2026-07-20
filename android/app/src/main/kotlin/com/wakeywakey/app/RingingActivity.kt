@@ -58,10 +58,20 @@ class RingingActivity : Activity() {
         val vibrate = intent.getBooleanExtra(AlarmReceiver.EXTRA_VIBRATE, true)
         val snoozeDurationMin = intent.getIntExtra(AlarmReceiver.EXTRA_SNOOZE_DURATION_MIN, 10)
         val maxSnoozeCount = intent.getIntExtra(AlarmReceiver.EXTRA_MAX_SNOOZE_COUNT, -1)
+        val triggerType = intent.getStringExtra(AlarmReceiver.EXTRA_TRIGGER_TYPE) ?: "TIME"
 
         setContentView(R.layout.activity_ringing)
 
-        findViewById<TextView>(R.id.ringing_label).text = label
+        val headerText = if (triggerType == "TIMER") {
+            // Prefix the user label with a "Timer:" tag so the user
+            // immediately sees this is a countdown timer, not a
+            // wall-clock alarm. The user-provided label still
+            // appears, so the wording stays friendly.
+            "Timer: $label"
+        } else {
+            label
+        }
+        findViewById<TextView>(R.id.ringing_label).text = headerText
         findViewById<Button>(R.id.snooze_button).text =
             "Snooze ($snoozeDurationMin min)"
 

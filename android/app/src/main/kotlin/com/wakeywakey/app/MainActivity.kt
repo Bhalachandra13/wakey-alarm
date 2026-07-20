@@ -207,36 +207,61 @@ class MainActivity : FlutterActivity() {
      * Returning `{scheduled: false}` (rather than throwing) keeps
      * the Dart-side contract symmetric: callers can check one
      * boolean.
+     *
+     * Supports two payload shapes:
+     *
+     *  1. **Wall-clock alarm** — Dart provides `timeHour` /
+     *     `timeMinute` (and optional `repeatDays`). The fire time
+     *     is computed via [NextAlarmTime.compute].
+     *  2. **Absolute trigger (timer)** — Dart provides an explicit
+     *     `triggerAtMillis` epoch-millis. The fire time is used
+     *     directly. This is how Iteration 3 timers reuse the
+     *     AlarmManager pipeline (see `requirements.md` §5.4).
+     *
+     * The optional `triggerType` field is `"TIME"` (default) for
+     * alarms and `"TIMER"` for timers; the native UI uses it to
+     * decide on the title/subtitle in [RingingActivity].
      */
     private fun handleScheduleAlarm(payload: Map<String, Any?>, result: MethodChannel.Result) {
         val alarmId = (payload["alarmId"] as? Number)?.toInt() ?: -1
+        val explicitTrigger = (payload["triggerAtMillis"] as? Number)?.toLong()
         val hour = (payload["timeHour"] as? Number)?.toInt()
         val minute = (payload["timeMinute"] as? Number)?.toInt()
+        val triggerType = (payload["triggerType"] as? String) ?: "TIME"
 
-        if (alarmId < 0 || hour == null || minute == null) {
-            Log.w(TAG, "scheduleAlarm rejected: missing alarmId/hour/minute in $payload")
+        if (alarmId < 0 || explicitTrigger == null && (hour == null || minute == null)) {
+            Log.w(TAG, "scheduleAlarm rejected: missing alarmId/time fields in $payload")
             result.success(mapOf("scheduled" to false, "error" to "missing required fields"))
             return
         }
 
+        // For the alarm path, use the supplied hour/minute as
+        // placeholders. They are recorded in persistence so the
+        // BootReceiver can re-schedule a one-shot if needed, but
+        // for one-shot alarms the actual fire time is whatever the
+        // caller computed (or `NextAlarmTime` derived). For the
+        // timer path the values are 0/0 — they are never used
+        // because timers never repeat and the explicit trigger time
+        // is canonical.
+        val effectiveHour = hour ?: 0
+        val effectiveMinute = minute ?: 0
+
         val data = AlarmScheduler.AlarmData(
             alarmId = alarmId,
-            timeHour = hour,
-            timeMinute = minute,
+            timeHour = effectiveHour,
+            timeMinute = effectiveMinute,
             repeatDays = payload["repeatDays"] as? String,
             label = payload["label"] as? String ?: "Alarm",
             soundUri = (payload["soundUri"] as? String) ?: "",
             vibrate = (payload["vibrate"] as? Boolean) ?: true,
             snoozeDurationMin = (payload["snoozeDurationMin"] as? Number)?.toInt() ?: 10,
             maxSnoozeCount = (payload["maxSnoozeCount"] as? Number)?.toInt() ?: -1,
-            // Dart-initiated schedules are always the start of a
-            // fresh fire cycle, so reset the snooze counter to 0
-            // here. Without this, an alarm whose user reached the
-            // snooze limit and then re-enabled from the UI would
-            // still see the old counter carried over.
             currentSnoozeCount = 0,
+            triggerType = triggerType,
         )
-        val triggerAtMillis = NextAlarmTime.compute(hour, minute, data.repeatDays)
+
+        val triggerAtMillis: Long = explicitTrigger
+            ?: NextAlarmTime.compute(effectiveHour, effectiveMinute, data.repeatDays)
 
         val ok = AlarmScheduler.schedule(this, data, triggerAtMillis)
         result.success(

@@ -54,11 +54,16 @@ class AlarmService : Service() {
         val snoozeDurationMin =
             intent?.getIntExtra(AlarmReceiver.EXTRA_SNOOZE_DURATION_MIN, 10) ?: 10
         val maxSnoozeCount = intent?.getIntExtra(AlarmReceiver.EXTRA_MAX_SNOOZE_COUNT, -1) ?: -1
+        val triggerType = intent?.getStringExtra(AlarmReceiver.EXTRA_TRIGGER_TYPE) ?: "TIME"
 
-        Log.d(TAG, "Starting alarm: id=$alarmId label=$label vibrate=$vibrate")
+        Log.d(
+            TAG,
+            "Starting alarm: id=$alarmId label=$label vibrate=$vibrate triggerType=$triggerType",
+        )
 
         val fullScreenIntent = buildFullScreenIntent(
             alarmId, label, soundUri, vibrate, snoozeDurationMin, maxSnoozeCount,
+            triggerType,
         )
         val notification = buildNotification(label, fullScreenIntent)
 
@@ -74,7 +79,9 @@ class AlarmService : Service() {
         // reliable way to bring RingingActivity forward. The
         // notification's fullScreenIntent remains as the
         // lock-screen / cold-start fallback.
-        launchRingingActivity(alarmId, label, soundUri, vibrate, snoozeDurationMin, maxSnoozeCount)
+        launchRingingActivity(
+            alarmId, label, soundUri, vibrate, snoozeDurationMin, maxSnoozeCount, triggerType,
+        )
         playRingtone(soundUri)
         if (vibrate) startVibration()
 
@@ -98,6 +105,7 @@ class AlarmService : Service() {
         vibrate: Boolean,
         snoozeDurationMin: Int,
         maxSnoozeCount: Int,
+        triggerType: String,
     ): PendingIntent {
         val ringingIntent = Intent(this, RingingActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -107,6 +115,7 @@ class AlarmService : Service() {
             putExtra(AlarmReceiver.EXTRA_VIBRATE, vibrate)
             putExtra(AlarmReceiver.EXTRA_SNOOZE_DURATION_MIN, snoozeDurationMin)
             putExtra(AlarmReceiver.EXTRA_MAX_SNOOZE_COUNT, maxSnoozeCount)
+            putExtra(AlarmReceiver.EXTRA_TRIGGER_TYPE, triggerType)
         }
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         return PendingIntent.getActivity(this, alarmId, ringingIntent, flags)
@@ -129,6 +138,7 @@ class AlarmService : Service() {
         vibrate: Boolean,
         snoozeDurationMin: Int,
         maxSnoozeCount: Int,
+        triggerType: String,
     ) {
         val ringingIntent = Intent(this, RingingActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -138,6 +148,7 @@ class AlarmService : Service() {
             putExtra(AlarmReceiver.EXTRA_VIBRATE, vibrate)
             putExtra(AlarmReceiver.EXTRA_SNOOZE_DURATION_MIN, snoozeDurationMin)
             putExtra(AlarmReceiver.EXTRA_MAX_SNOOZE_COUNT, maxSnoozeCount)
+            putExtra(AlarmReceiver.EXTRA_TRIGGER_TYPE, triggerType)
         }
         try {
             startActivity(ringingIntent)

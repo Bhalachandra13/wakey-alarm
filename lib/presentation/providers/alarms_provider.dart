@@ -59,6 +59,10 @@ class AlarmsNotifier extends AsyncNotifier<List<Alarm>> {
     ref.listen<AsyncValue<AlarmEvent>>(alarmEventsProvider, (prev, next) {
       final event = next.value;
       if (event == null) return;
+      // Skip timer-fired / dismissed events; the TimersNotifier
+      // owns the timer lifecycle. Without this, dismissing a timer
+      // would try to delete a row from the alarms table.
+      if (event.triggerType == 'timer') return;
       switch (event.type) {
         case AlarmEventType.fired:
           // RingingActivity already showed the UI; nothing to
@@ -211,6 +215,9 @@ final ringingAlarmIdProvider = StreamProvider<int?>((ref) async* {
   final bridge = ref.watch(alarmBridgeProvider);
   yield null;
   await for (final event in bridge.alarmEvents) {
+    // Timer fires share the alarm pipeline; the "alarm is ringing"
+    // banner is for wall-clock alarms only, so suppress them here.
+    if (event.triggerType == 'timer') continue;
     switch (event.type) {
       case AlarmEventType.fired:
         yield event.alarmId;

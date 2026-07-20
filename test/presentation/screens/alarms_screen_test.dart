@@ -327,6 +327,8 @@ class _FakeAlarmBridge implements AlarmBridge {
   @override
   Future<bool> scheduleAlarm(Map<String, Object?> payload) async => true;
   @override
+  Future<bool> scheduleTimer(Map<String, Object?> payload) async => true;
+  @override
   Future<bool> cancelAlarm(int alarmId) async => true;
   @override
   Future<String?> pickRingtone({String? currentUri}) async => null;

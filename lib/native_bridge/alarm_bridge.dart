@@ -41,6 +41,33 @@ class AlarmBridge {
     return result?['scheduled'] == true;
   }
 
+  /// Schedule a timer. Reuses the same native alarm pipeline as a
+  /// time-based alarm but with a different [triggerType] so the
+  /// ringing UI can present itself as a timer.
+  ///
+  /// The payload is structurally similar to [scheduleAlarm] but uses
+  /// [triggerAtMillisKey] for the absolute fire time (instead of
+  /// hour/minute). Required keys:
+  ///
+  /// * `alarmId` (int) — the timer's DB id; reused as the
+  ///   PendingIntent request code.
+  /// * `triggerAtMillis` (int) — epoch-millis at which the timer
+  ///   should fire.
+  /// * `label` (String) — user-facing label.
+  ///
+  /// Optional keys (all carried through to the native pipeline):
+  /// `soundUri` (String), `vibrate` (bool), `snoozeDurationMin`
+  /// (int), `maxSnoozeCount` (int), `triggerType` (String, default
+  /// `"TIMER"`).
+  Future<bool> scheduleTimer(Map<String, Object?> payload) async {
+    final enriched = <String, Object?>{'triggerType': 'TIMER', ...payload};
+    final result = await _methodChannel.invokeMapMethod<String, Object?>(
+      'scheduleAlarm',
+      enriched,
+    );
+    return result?['scheduled'] == true;
+  }
+
   Future<bool> cancelAlarm(int alarmId) async {
     final result = await _methodChannel.invokeMapMethod<String, Object?>(
       'cancelAlarm',

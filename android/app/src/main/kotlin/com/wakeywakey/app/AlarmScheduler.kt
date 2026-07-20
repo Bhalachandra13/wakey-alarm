@@ -58,6 +58,12 @@ object AlarmScheduler {
      * alarm, or a post-reboot reschedule). Enforcing the limit
      * is also done in [RingingActivity] (see
      * `scheduleSnooze`).
+     *
+     * [triggerType] discriminates between the two kinds of items
+     * the pipeline schedules:
+     *  - `"TIME"` (default) — a wall-clock alarm.
+     *  - `"TIMER"` — a countdown timer (Iteration 3), which uses
+     *    the same native pipeline but with different UI labelling.
      */
     data class AlarmData(
         val alarmId: Int,
@@ -101,6 +107,14 @@ object AlarmScheduler {
          * natural time, which is the correct behavior.
          */
         val isSnoozeFire: Boolean = false,
+        /**
+         * `"TIME"` for a wall-clock alarm (default), `"TIMER"` for
+         * a countdown timer. Used by the ringing UI to vary the
+         * title/subtitle — see [RingingActivity]. Persisted with
+         * the alarm data so the BootReceiver can re-arm the right
+         * kind of schedule.
+         */
+        val triggerType: String = "TIME",
     ) {
         val isRepeating: Boolean
             get() = !repeatDays.isNullOrBlank()
@@ -278,6 +292,7 @@ object AlarmScheduler {
             putExtra(AlarmReceiver.EXTRA_SNOOZE_DURATION_MIN, data.snoozeDurationMin)
             putExtra(AlarmReceiver.EXTRA_MAX_SNOOZE_COUNT, data.maxSnoozeCount)
             putExtra(AlarmReceiver.EXTRA_IS_SNOOZE_FIRE, data.isSnoozeFire)
+            putExtra(AlarmReceiver.EXTRA_TRIGGER_TYPE, data.triggerType)
         }
     }
 
@@ -363,6 +378,7 @@ object AlarmScheduler {
         put("snoozeDurationMin", d.snoozeDurationMin)
         put("maxSnoozeCount", d.maxSnoozeCount)
         put("currentSnoozeCount", d.currentSnoozeCount)
+        put("triggerType", d.triggerType)
     }
 
     private fun fromJson(o: JSONObject): AlarmData = AlarmData(
@@ -378,5 +394,9 @@ object AlarmScheduler {
         // Default to 0 so alarms persisted before this field was
         // added don't get a confusing initial snooze count.
         currentSnoozeCount = o.optInt("currentSnoozeCount", 0),
+        // Default to "TIME" so alarms persisted before this field
+        // was added are still treated as wall-clock alarms by the
+        // ringing UI.
+        triggerType = o.optString("triggerType", "TIME"),
     )
 }

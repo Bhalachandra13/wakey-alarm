@@ -44,14 +44,20 @@ class AlarmReceiver : BroadcastReceiver() {
         // which is fine because nothing in the UI could render it
         // anyway when the app is cold-started by this broadcast.
         if (alarmId >= 0) {
+            val triggerType =
+                intent.getStringExtra(EXTRA_TRIGGER_TYPE) ?: "TIME"
+            val triggerTypeForEvent = when (triggerType) {
+                "TIMER" -> "timer"
+                "LOCATION" -> "location"
+                else -> "time"
+            }
             AlarmEventBus.emit(
                 mapOf(
                     "alarmId" to alarmId,
                     "type" to "fired",
-                    // Iteration 1 only schedules time-based alarms via
-                    // AlarmManager; geofence-driven fires arrive through
-                    // a separate path in Iteration 4.
-                    "triggerType" to "time",
+                    // `time` for alarms, `timer` for countdown
+                    // timers, `location` for geofence fires.
+                    "triggerType" to triggerTypeForEvent,
                 ),
             )
         }
@@ -66,6 +72,10 @@ class AlarmReceiver : BroadcastReceiver() {
             putExtra(EXTRA_SNOOZE_DURATION_MIN, intent.getIntExtra(EXTRA_SNOOZE_DURATION_MIN, 10))
             putExtra(EXTRA_MAX_SNOOZE_COUNT, intent.getIntExtra(EXTRA_MAX_SNOOZE_COUNT, -1))
             putExtra(EXTRA_IS_SNOOZE_FIRE, isSnoozeFire)
+            putExtra(
+                EXTRA_TRIGGER_TYPE,
+                intent.getStringExtra(EXTRA_TRIGGER_TYPE) ?: "TIME",
+            )
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             context.startForegroundService(serviceIntent)
@@ -152,5 +162,9 @@ class AlarmReceiver : BroadcastReceiver() {
         // RingingActivity when the user tapped snooze). See the
         // class-level comment for the full state machine.
         const val EXTRA_IS_SNOOZE_FIRE = "isSnoozeFire"
+        // `"TIME"` for a wall-clock alarm, `"TIMER"` for a
+        // countdown timer. Carried through every fire so the
+        // ringing UI can present itself differently.
+        const val EXTRA_TRIGGER_TYPE = "triggerType"
     }
 }
