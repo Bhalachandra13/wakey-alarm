@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:wakey_alarm/domain/alarm.dart';
+import 'package:wakey_alarm/native_bridge/geofence_bridge.dart';
 import 'package:wakey_alarm/presentation/providers/alarms_provider.dart';
+import 'package:wakey_alarm/presentation/providers/geofence_arming_controller.dart';
+import 'package:wakey_alarm/presentation/screens/background_location_explanation_screen.dart';
 import 'package:wakey_alarm/presentation/screens/edit_alarm_screen.dart';
 
 class AlarmsScreen extends ConsumerWidget {
@@ -36,6 +39,7 @@ class AlarmsScreen extends ConsumerWidget {
       children: [
         if (ringingId != null)
           _RingingBanner(alarmLabel: ringingLabel ?? 'Alarm'),
+        const _GeofenceHealthBanner(),
         Expanded(
           child: alarmsAsyncValue.when(
             loading: () => const Center(child: CircularProgressIndicator()),
@@ -48,8 +52,10 @@ class AlarmsScreen extends ConsumerWidget {
                   Text('Error loading alarms'),
                   const SizedBox(height: 8),
                   Text(
-                    error.toString(),
+                    error.toString().split('\n').first,
                     textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],
@@ -61,6 +67,95 @@ class AlarmsScreen extends ConsumerWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Health-check banner shown above the alarm list when one or
+/// more location alarms are armed but the user is missing a
+/// required permission (background location, battery optimization
+/// exemption, etc.). Tapping the banner opens the relevant
+/// Settings page.
+class _GeofenceHealthBanner extends ConsumerStatefulWidget {
+  const _GeofenceHealthBanner();
+
+  @override
+  ConsumerState<_GeofenceHealthBanner> createState() =>
+      _GeofenceHealthBannerState();
+}
+
+class _GeofenceHealthBannerState extends ConsumerState<_GeofenceHealthBanner> {
+  LocationPermissionStatus? _permissionStatus;
+  bool? _batteryExempt;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    final bridge = ref.read(geofenceBridgeProvider);
+    final perm = await bridge.getPermissionStatus();
+    final battery = await bridge.isBatteryOptimizationExempt();
+    if (mounted) {
+      setState(() {
+        _permissionStatus = perm;
+        _batteryExempt = battery;
+      });
+    }
+  }
+
+  bool get _hasIssue {
+    final alarms = ref.read(alarmsProvider).value;
+    if (alarms == null) return false;
+    final hasArmedLocation = alarms.any(
+      (a) => a.triggerType == AlarmTriggerType.location && a.isArmed,
+    );
+    if (!hasArmedLocation) return false;
+    if (_permissionStatus !=
+            LocationPermissionStatus.grantedForegroundAndBackground ||
+        _batteryExempt == false) {
+      return true;
+    }
+    return false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_hasIssue) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+    return Material(
+      color: theme.colorScheme.tertiaryContainer,
+      child: InkWell(
+        onTap: () async {
+          final flow = LocationPermissionFlow(ref.read(geofenceBridgeProvider));
+          await flow.runFlow(context);
+          await _refresh();
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Row(
+            children: [
+              Icon(
+                Icons.warning_amber,
+                color: theme.colorScheme.onTertiaryContainer,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  _batteryExempt == false
+                      ? 'Geofence alarms may be killed by battery optimization. Tap to fix.'
+                      : 'Background location is required for geofence alarms to fire. Tap to grant.',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onTertiaryContainer,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -233,15 +328,22 @@ class _AlarmListTile extends ConsumerWidget {
         style: color == null ? null : TextStyle(color: color),
       );
     } else {
-      // Location alarm
+      // Location alarm.
+      final radius = alarm.radiusMeters ?? 0;
+      final radiusText = radius >= 1000
+          ? '${(radius / 1000).toStringAsFixed(radius % 1000 == 0 ? 0 : 1)} km'
+          : '$radius m';
       return Text(
-        'Location-based (${alarm.radiusMeters}m radius)',
+        alarm.isArmed
+            ? 'Armed • $radiusText radius'
+            : 'Disarmed • $radiusText radius',
         style: color == null ? null : TextStyle(color: color),
       );
     }
   }
 
   Widget _buildTrailing(BuildContext context, WidgetRef ref, Alarm alarm) {
+    final isLocation = alarm.triggerType == AlarmTriggerType.location;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -256,17 +358,84 @@ class _AlarmListTile extends ConsumerWidget {
             );
           },
         ),
-        // Toggle enabled/disabled
-        Switch(
-          value: alarm.isEnabled,
-          onChanged: (newValue) {
-            final notifier = ref.read(alarmsNotifierProvider.notifier);
-            if (alarm.id != null) {
-              notifier.toggleEnabled(alarm.id!, newValue);
-            }
-          },
-        ),
+        if (isLocation)
+          // Arm/disarm toggle for location alarms. The "isEnabled"
+          // switch is intentionally hidden because geofence alarms
+          // are armed, not enabled — see the geofence arming flow.
+          IconButton(
+            tooltip: alarm.isArmed ? 'Stop trip' : 'Start trip',
+            icon: Icon(alarm.isArmed ? Icons.stop_circle : Icons.play_circle),
+            onPressed: alarm.id == null
+                ? null
+                : () => _onArmToggle(context, ref, alarm),
+          )
+        else
+          // Toggle enabled/disabled for time-based alarms.
+          Switch(
+            value: alarm.isEnabled,
+            onChanged: (newValue) {
+              final notifier = ref.read(alarmsNotifierProvider.notifier);
+              if (alarm.id != null) {
+                notifier.toggleEnabled(alarm.id!, newValue);
+              }
+            },
+          ),
       ],
     );
+  }
+
+  Future<void> _onArmToggle(
+    BuildContext context,
+    WidgetRef ref,
+    Alarm alarm,
+  ) async {
+    final controller = ref.read(geofenceArmingControllerProvider);
+    if (alarm.isArmed) {
+      await controller.disarmAlarm(alarm);
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Geofence disarmed')));
+      }
+      return;
+    }
+    final result = await controller.armAlarm(alarm);
+    if (!context.mounted) return;
+    switch (result.outcome) {
+      case ArmingOutcome.armed:
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Geofence armed')));
+      case ArmingOutcome.alreadyInside:
+        showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text("You're already inside"),
+            content: const Text(
+              "You're already within the alarm's radius. Move outside "
+              'the circle first, or adjust the radius to make it smaller.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+      case ArmingOutcome.registrationFailed:
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Could not arm geofence')));
+      case ArmingOutcome.permissionMissing:
+        // Walk the user through the permission flow.
+        final bridge = ref.read(geofenceBridgeProvider);
+        final flow = LocationPermissionFlow(bridge);
+        await flow.runFlow(context);
+      case ArmingOutcome.invalidAlarm:
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Alarm configuration is invalid')),
+        );
+    }
   }
 }

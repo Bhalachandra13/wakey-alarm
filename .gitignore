@@ -43,3 +43,10 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+/android/build/
+
+# Local tools / installers
+/.github/*.exe
+/.github/*.msi
+/.github/*.dmg
+/.github/*.AppImage

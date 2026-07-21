@@ -4,6 +4,7 @@ import 'package:wakey_alarm/data/wakey_database.dart';
 import 'package:wakey_alarm/domain/alarm.dart';
 import 'package:wakey_alarm/domain/alarm_scheduler.dart';
 import 'package:wakey_alarm/native_bridge/alarm_bridge.dart';
+import 'package:wakey_alarm/native_bridge/geofence_bridge.dart';
 
 /// Provides access to the [WakeyDatabase] singleton.
 final databaseProvider = Provider<WakeyDatabase>((ref) {
@@ -71,11 +72,17 @@ class AlarmsNotifier extends AsyncNotifier<List<Alarm>> {
           break;
         case AlarmEventType.snoozed:
           // The native side already re-scheduled the alarm.
-          // We don't need to touch the sqflite row because the
-          // Alarm object's `time` field is the natural fire
-          // time, not the snooze fire time. The UI is correct
-          // as-is; just refresh so any listeners re-read.
-          ref.invalidateSelf();
+          // For a *location-triggered* alarm, snooze also implies
+          // the user has acknowledged the fire — auto-disarm the
+          // geofence so a follow-up ENTER transition (e.g. the
+          // user leaves and re-enters the circle) doesn't ring
+          // again immediately. For time-based alarms the native
+          // side handles re-scheduling itself; we just refresh.
+          if (event.triggerType == 'location') {
+            _onNativeDismiss(event.alarmId);
+          } else {
+            ref.invalidateSelf();
+          }
         case AlarmEventType.dismissed:
           _onNativeDismiss(event.alarmId);
       }
@@ -93,10 +100,27 @@ class AlarmsNotifier extends AsyncNotifier<List<Alarm>> {
   /// If the row was already gone (e.g. user toggled it off
   /// before the ringing UI showed up), the delete is a safe
   /// no-op.
+  ///
+  /// For a **location-triggered** alarm, the dismiss is the
+  /// signal to perform the one-shot auto-disarm: remove the
+  /// native geofence and flip `is_armed` back to false so the
+  /// alarm is ready to be re-armed for the next trip. Without
+  /// this, GPS jitter at the boundary could re-trigger the
+  /// alarm repeatedly.
   Future<void> _onNativeDismiss(int alarmId) async {
     final alarm = await _alarmDao.read(alarmId);
     if (alarm == null) {
       // Already gone — nothing to do.
+      ref.invalidateSelf();
+      return;
+    }
+    if (alarm.triggerType == AlarmTriggerType.location) {
+      // One-shot auto-disarm: unregister the geofence and reset
+      // the armed flag. The row itself stays in the DB — the user
+      // may want to re-arm it for a future trip.
+      final bridge = ref.read(geofenceBridgeProvider);
+      await bridge.removeGeofence(alarmId);
+      await _alarmDao.updateArmed(alarmId, false);
       ref.invalidateSelf();
       return;
     }

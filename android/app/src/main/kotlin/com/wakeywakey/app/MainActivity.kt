@@ -96,6 +96,18 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            GEOFENCE_CHANNEL,
+        ).setMethodCallHandler { call, result ->
+            GeofenceController.handleMethodCall(
+                this,
+                call.method,
+                call.arguments as? Map<String, Any?>,
+                result,
+            )
+        }
     }
 
     override fun onRequestPermissionsResult(
@@ -374,6 +386,7 @@ class MainActivity : FlutterActivity() {
         private const val ALARM_BRIDGE_CHANNEL = "com.wakeywakey/alarm_bridge"
         private const val ALARM_EVENTS_CHANNEL = "com.wakeywakey/alarm_events"
         private const val PERMISSIONS_CHANNEL = "com.wakeywakey/permissions"
+        private const val GEOFENCE_CHANNEL = "com.wakeywakey/geofence"
         private const val ALARM_NOTIFICATION_CHANNEL_ID = "alarm_alerts"
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1001
         private const val PICK_RINGTONE_REQUEST_CODE = 2001

@@ -62,14 +62,19 @@ class RingingActivity : Activity() {
 
         setContentView(R.layout.activity_ringing)
 
-        val headerText = if (triggerType == "TIMER") {
-            // Prefix the user label with a "Timer:" tag so the user
-            // immediately sees this is a countdown timer, not a
-            // wall-clock alarm. The user-provided label still
-            // appears, so the wording stays friendly.
-            "Timer: $label"
-        } else {
-            label
+        val headerText = when (triggerType) {
+            "TIMER" ->
+                // Prefix the user label with a "Timer:" tag so the
+                // user immediately sees this is a countdown timer,
+                // not a wall-clock alarm. The user-provided label
+                // still appears, so the wording stays friendly.
+                "Timer: $label"
+            "LOCATION" ->
+                // Geofence fire: tag the label so the user knows the
+                // wake-up reason is location-based, not a time of
+                // day they had to remember.
+                "Location: $label"
+            else -> label
         }
         findViewById<TextView>(R.id.ringing_label).text = headerText
         findViewById<Button>(R.id.snooze_button).text =

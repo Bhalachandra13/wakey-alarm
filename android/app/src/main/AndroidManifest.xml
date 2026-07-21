@@ -10,11 +10,28 @@
          which is what an alarm clock needs (Android has no dedicated
          "alarm" FGS type). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Location permissions for the geofence alarm feature
+         (Iteration 4). Foreground (fine) is the standard runtime
+         permission. Background is requested in-app via a system
+         Settings page — it cannot be requested via a dialog on
+         Android 10+. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
 
     <application
         android:label="Wakey-Wakey"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+        <!-- Google Maps API key. Replace the value with a real key
+             from the Google Cloud Console before shipping. The
+             Maps SDK will fail to load tiles without a valid key,
+             but the rest of the app (and the geofence feature)
+             works regardless. The picker UI degrades to a
+             coordinate-input form when tiles don't render. -->
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="${MAPS_API_KEY}" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -91,6 +108,19 @@
             android:name=".AlarmReceiver"
             android:enabled="true"
             android:exported="true" />
+        <!-- Receives geofence ENTER transitions from the Google Play
+             Services GeofencingClient. Must be a manifest-declared
+             BroadcastReceiver (not a dynamic one) because the OS
+             delivers the broadcast even when the app process is
+             dead — the normal state for a geofence fire that
+             happens while the user is in the background. The
+             PendingIntent registered with the GeofencingClient
+             uses FLAG_IMMUTABLE, so a forged broadcast can only
+             trigger the alarm UI, not modify which alarm fires. -->
+        <receiver
+            android:name=".GeofenceTransitionReceiver"
+            android:enabled="true"
+            android:exported="false" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

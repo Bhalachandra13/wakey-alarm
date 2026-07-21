@@ -190,18 +190,6 @@ void main() {
       expect(find.byIcon(Icons.delete), findsOneWidget);
     });
 
-    testWidgets('time alarm displays location radius information', (
-      WidgetTester tester,
-    ) async {
-      const radiusText = 'Location-based (500m radius)';
-
-      await tester.pumpWidget(
-        const MaterialApp(home: Scaffold(body: Text(radiusText))),
-      );
-
-      expect(find.text(radiusText), findsOneWidget);
-    });
-
     testWidgets('card displays alarm in list tile format', (
       WidgetTester tester,
     ) async {
@@ -222,6 +210,84 @@ void main() {
       expect(find.byType(Card), findsOneWidget);
       expect(find.byType(ListTile), findsOneWidget);
       expect(find.text('Morning Alarm'), findsOneWidget);
+    });
+
+    testWidgets('location alarm subtitle shows radius in disarmed state', (
+      tester,
+    ) async {
+      final fakeBridge = _FakeAlarmBridge();
+      addTearDown(fakeBridge.eventController.close);
+      final alarm = Alarm(
+        id: 1,
+        label: 'Train stop',
+        triggerType: AlarmTriggerType.location,
+        latitude: 51.5074,
+        longitude: -0.1278,
+        radiusMeters: 2000,
+        isEnabled: true,
+        isArmed: false,
+        soundUri: '',
+        vibrate: false,
+        snoozeDurationMin: 10,
+        createdAt: '2026-07-20T10:00:00Z',
+        updatedAt: '2026-07-20T10:00:00Z',
+      );
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            alarmBridgeProvider.overrideWithValue(fakeBridge),
+            alarmEventsProvider.overrideWith(
+              (ref) => fakeBridge.eventController.stream,
+            ),
+            alarmsNotifierProvider.overrideWith(
+              () => _StubAlarmsNotifier([alarm]),
+            ),
+          ],
+          child: const MaterialApp(home: Scaffold(body: AlarmsScreen())),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Disarmed • 2 km radius'), findsOneWidget);
+    });
+
+    testWidgets('location alarm subtitle shows radius in armed state', (
+      tester,
+    ) async {
+      final fakeBridge = _FakeAlarmBridge();
+      addTearDown(fakeBridge.eventController.close);
+      final alarm = Alarm(
+        id: 1,
+        label: 'Train stop',
+        triggerType: AlarmTriggerType.location,
+        latitude: 51.5074,
+        longitude: -0.1278,
+        radiusMeters: 500,
+        isEnabled: true,
+        isArmed: true,
+        soundUri: '',
+        vibrate: false,
+        snoozeDurationMin: 10,
+        createdAt: '2026-07-20T10:00:00Z',
+        updatedAt: '2026-07-20T10:00:00Z',
+      );
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            alarmBridgeProvider.overrideWithValue(fakeBridge),
+            alarmEventsProvider.overrideWith(
+              (ref) => fakeBridge.eventController.stream,
+            ),
+            alarmsNotifierProvider.overrideWith(
+              () => _StubAlarmsNotifier([alarm]),
+            ),
+          ],
+          child: const MaterialApp(home: Scaffold(body: AlarmsScreen())),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Armed • 500 m radius'), findsOneWidget);
     });
   });
 
@@ -314,6 +380,13 @@ void main() {
 class _EmptyAlarmsNotifier extends AlarmsNotifier {
   @override
   Future<List<Alarm>> build() async => const [];
+}
+
+class _StubAlarmsNotifier extends AlarmsNotifier {
+  _StubAlarmsNotifier(this._alarms);
+  final List<Alarm> _alarms;
+  @override
+  Future<List<Alarm>> build() async => _alarms;
 }
 
 class _FakeAlarmBridge implements AlarmBridge {
