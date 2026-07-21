@@ -20,6 +20,15 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        // Manifest placeholder values. The Maps API key is intentionally
+        // left as a placeholder so the open-source repo doesn't ship a
+        // secret; without a real key the map widget shows a blank canvas
+        // but the rest of the geofence feature still works. Set
+        // MAPS_API_KEY in android/local.properties (or your CI secrets)
+        // to a real Google Maps API key to enable tile rendering.
+        manifestPlaceholders["MAPS_API_KEY"] =
+            (project.findProperty("MAPS_API_KEY") as String?) ?: "DEV_NO_KEY"
     }
 
     buildTypes {
