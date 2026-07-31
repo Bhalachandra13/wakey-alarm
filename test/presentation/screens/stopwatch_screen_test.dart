@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:wakey_alarm/domain/stopwatch.dart';
 import 'package:wakey_alarm/presentation/providers/stopwatch_provider.dart';
 import 'package:wakey_alarm/presentation/screens/stopwatch_screen.dart';
 
@@ -163,5 +164,46 @@ void main() {
       expect(lap3Index, lessThan(lap2Index));
       expect(lap2Index, lessThan(lap1Index));
     });
+
+    testWidgets(
+        'scales down a long elapsed display with a FittedBox to avoid overflow', (
+      tester,
+    ) async {
+      final state = StopwatchState(
+        elapsed: const Duration(
+          hours: 12,
+          minutes: 34,
+          seconds: 56,
+          milliseconds: 789,
+        ),
+        isRunning: false,
+        laps: const [],
+      );
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            stopwatchProvider.overrideWith(() => _FixedStopwatchNotifier(state)),
+          ],
+          child: const MaterialApp(home: Scaffold(body: StopwatchScreen())),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final displayText = find.text('12:34:56.78');
+      expect(displayText, findsOneWidget);
+      expect(
+        find.ancestor(of: displayText, matching: find.byType(FittedBox)),
+        findsOneWidget,
+        reason: 'Elapsed time should be wrapped in a FittedBox',
+      );
+    });
   });
+}
+
+class _FixedStopwatchNotifier extends StopwatchNotifier {
+  _FixedStopwatchNotifier(this._state);
+  final StopwatchState _state;
+
+  @override
+  StopwatchState build() => _state;
 }

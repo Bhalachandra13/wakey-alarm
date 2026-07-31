@@ -5,6 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wakey_alarm/domain/alarm.dart';
 import 'package:wakey_alarm/native_bridge/alarm_bridge.dart';
+import 'package:wakey_alarm/native_bridge/geofence_bridge.dart';
+import 'package:wakey_alarm/native_bridge/permission_bridge.dart';
 import 'package:wakey_alarm/presentation/providers/alarms_provider.dart';
 import 'package:wakey_alarm/presentation/screens/alarms_screen.dart';
 
@@ -236,6 +238,7 @@ void main() {
         ProviderScope(
           overrides: [
             alarmBridgeProvider.overrideWithValue(fakeBridge),
+            permissionBridgeProvider.overrideWithValue(_FakePermissionBridge()),
             alarmEventsProvider.overrideWith(
               (ref) => fakeBridge.eventController.stream,
             ),
@@ -275,6 +278,7 @@ void main() {
         ProviderScope(
           overrides: [
             alarmBridgeProvider.overrideWithValue(fakeBridge),
+            permissionBridgeProvider.overrideWithValue(_FakePermissionBridge()),
             alarmEventsProvider.overrideWith(
               (ref) => fakeBridge.eventController.stream,
             ),
@@ -289,6 +293,55 @@ void main() {
 
       expect(find.text('Armed • 500 m radius'), findsOneWidget);
     });
+
+    testWidgets('shows geofence health banner when armed location alarm lacks permission', (
+      tester,
+    ) async {
+      final fakeBridge = _FakeAlarmBridge();
+      addTearDown(fakeBridge.eventController.close);
+      final alarm = Alarm(
+        id: 1,
+        label: 'Train stop',
+        triggerType: AlarmTriggerType.location,
+        latitude: 51.5074,
+        longitude: -0.1278,
+        radiusMeters: 500,
+        isEnabled: true,
+        isArmed: true,
+        soundUri: '',
+        vibrate: false,
+        snoozeDurationMin: 10,
+        createdAt: '2026-07-20T10:00:00Z',
+        updatedAt: '2026-07-20T10:00:00Z',
+      );
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            alarmBridgeProvider.overrideWithValue(fakeBridge),
+            permissionBridgeProvider.overrideWithValue(_FakePermissionBridge()),
+            alarmEventsProvider.overrideWith(
+              (ref) => fakeBridge.eventController.stream,
+            ),
+            alarmsNotifierProvider.overrideWith(
+              () => _StubAlarmsNotifier([alarm]),
+            ),
+            geofenceBridgeProvider.overrideWithValue(
+              _FakeGeofenceBridge(
+                permissionStatus: LocationPermissionStatus.denied,
+              ),
+            ),
+          ],
+          child: const MaterialApp(home: Scaffold(body: AlarmsScreen())),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.textContaining('Background location'),
+        findsOneWidget,
+        reason: 'Geofence health banner should prompt for background location',
+      );
+    });
   });
 
   group('AlarmsScreen with provider overrides', () {
@@ -302,6 +355,7 @@ void main() {
         ProviderScope(
           overrides: [
             alarmBridgeProvider.overrideWithValue(fakeBridge),
+            permissionBridgeProvider.overrideWithValue(_FakePermissionBridge()),
             alarmsNotifierProvider.overrideWith(_EmptyAlarmsNotifier.new),
           ],
           child: const MaterialApp(home: Scaffold(body: AlarmsScreen())),
@@ -341,6 +395,7 @@ void main() {
         ProviderScope(
           overrides: [
             alarmBridgeProvider.overrideWithValue(fakeBridge),
+            permissionBridgeProvider.overrideWithValue(_FakePermissionBridge()),
             alarmsNotifierProvider.overrideWith(_EmptyAlarmsNotifier.new),
           ],
           child: const MaterialApp(home: Scaffold(body: AlarmsScreen())),
@@ -389,6 +444,22 @@ class _StubAlarmsNotifier extends AlarmsNotifier {
   Future<List<Alarm>> build() async => _alarms;
 }
 
+class _FakeGeofenceBridge extends GeofenceBridge {
+  _FakeGeofenceBridge({
+    this.permissionStatus = LocationPermissionStatus.grantedForegroundAndBackground,
+    this.batteryExempt = true,
+  }) : super();
+
+  final LocationPermissionStatus permissionStatus;
+  final bool batteryExempt;
+
+  @override
+  Future<LocationPermissionStatus> getPermissionStatus() async => permissionStatus;
+
+  @override
+  Future<bool> isBatteryOptimizationExempt() async => batteryExempt;
+}
+
 class _FakeAlarmBridge implements AlarmBridge {
   _FakeAlarmBridge()
     : eventController = StreamController<AlarmEvent>.broadcast();
@@ -405,4 +476,20 @@ class _FakeAlarmBridge implements AlarmBridge {
   Future<bool> cancelAlarm(int alarmId) async => true;
   @override
   Future<String?> pickRingtone({String? currentUri}) async => null;
+}
+
+class _FakePermissionBridge implements PermissionBridge {
+  @override
+  Future<bool> canScheduleExactAlarms() async => true;
+
+  @override
+  Future<bool> requestExactAlarmPermission() async => true;
+
+  @override
+  Future<NativePermissionStatus> getNotificationPermissionStatus() async =>
+      NativePermissionStatus.granted;
+
+  @override
+  Future<NativePermissionStatus> requestNotificationPermission() async =>
+      NativePermissionStatus.granted;
 }

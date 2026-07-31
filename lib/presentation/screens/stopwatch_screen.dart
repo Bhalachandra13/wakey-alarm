@@ -53,12 +53,16 @@ class _StopwatchDisplay extends StatelessWidget {
         : formatStopwatch(elapsed);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 32, horizontal: 16),
-      child: Text(
-        text,
-        style: theme.textTheme.displayLarge?.copyWith(
-          fontFeatures: const [FontFeature.tabularFigures()],
-          fontWeight: FontWeight.w200,
-          color: theme.colorScheme.onSurface,
+      child: FittedBox(
+        fit: BoxFit.scaleDown,
+        child: Text(
+          text,
+          maxLines: 1,
+          style: theme.textTheme.displayLarge?.copyWith(
+            fontFeatures: const [FontFeature.tabularFigures()],
+            fontWeight: FontWeight.w200,
+            color: theme.colorScheme.onSurface,
+          ),
         ),
       ),
     );

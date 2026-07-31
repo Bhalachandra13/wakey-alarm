@@ -42,6 +42,16 @@ class GeofenceArmingController {
       return const ArmingResult.invalidAlarm();
     }
 
+    // 0. Already-armed guard. Calling armAlarm on a geofence that's
+    // already registered would add a duplicate (the native
+    // GeofencingClient replaces, but the replace path is not
+    // guaranteed to update all metadata fields). Treat it as a
+    // no-op success so the UI doesn't try to "arm" an already-armed
+    // alarm and confuse the user.
+    if (alarm.isArmed) {
+      return const ArmingResult.alreadyArmed();
+    }
+
     // 1. Permission check. The Dart UI is expected to have already
     // prompted the user via the permission flow before calling
     // `armAlarm`; we re-check here as a safety net.
@@ -56,25 +66,33 @@ class GeofenceArmingController {
     // failure would be more annoying than helpful.
     final here = await _bridge.getCurrentLocation();
     if (here != null) {
-      // 3. Already-inside check.
-      final inside = GeofenceValidator.isPointInsideGeofence(
-        centerLat: alarm.latitude!,
-        centerLon: alarm.longitude!,
-        pointLat: here.latitude,
-        pointLon: here.longitude,
-        radiusMeters: alarm.radiusMeters!,
+      // 3. Already-inside check. Compute the actual distance so the
+      // UI can tell the user how far they are from the boundary.
+      final distance = GeofenceValidator.distanceMeters(
+        alarm.latitude!,
+        alarm.longitude!,
+        here.latitude,
+        here.longitude,
       );
-      if (inside) {
-        return ArmingResult.alreadyInside(distanceMeters: null);
+      if (distance <= alarm.radiusMeters!) {
+        return ArmingResult.alreadyInside(distanceMeters: distance);
       }
     }
 
-    // 4. Register the geofence.
+    // 4. Register the geofence. Pass the full alarm metadata so
+    // the native side can persist it; the ringing UI and boot-time
+    // re-arming need label/sound/vibrate/snooze even when the
+    // Flutter engine is not running.
     final added = await _bridge.addGeofence(
       alarmId: alarmId,
       latitude: alarm.latitude!,
       longitude: alarm.longitude!,
       radiusMeters: alarm.radiusMeters!,
+      label: alarm.label,
+      soundUri: alarm.soundUri,
+      vibrate: alarm.vibrate,
+      snoozeDurationMin: alarm.snoozeDurationMin,
+      maxSnoozeCount: alarm.maxSnoozeCount ?? -1,
     );
     if (!added) {
       return const ArmingResult.registrationFailed();
@@ -121,6 +139,8 @@ class ArmingResult {
         distanceMeters: distanceMeters,
       );
 
+  const ArmingResult.alreadyArmed() : this._(outcome: ArmingOutcome.alreadyArmed);
+
   const ArmingResult.registrationFailed()
     : this._(outcome: ArmingOutcome.registrationFailed);
 
@@ -141,6 +161,7 @@ class ArmingResult {
 enum ArmingOutcome {
   armed,
   alreadyInside,
+  alreadyArmed,
   registrationFailed,
   permissionMissing,
   invalidAlarm,

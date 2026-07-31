@@ -126,15 +126,23 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun createNotificationChannels() {
+        // The channel is now created up-front in WakeyApplication.onCreate
+        // so that the cold-start path (AlarmManager broadcast waking the
+        // process before any Activity has run) also has a configured
+        // channel. We keep this call as an idempotent re-declaration in
+        // case the user re-installs or somehow loses the channel — it's
+        // a no-op if the channel already exists with the same id.
         val notificationManager =
             getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val channel = NotificationChannel(
-            ALARM_NOTIFICATION_CHANNEL_ID,
+            WakeyApplication.ALARM_NOTIFICATION_CHANNEL_ID,
             "Alarm alerts",
             NotificationManager.IMPORTANCE_HIGH,
         ).apply {
             description = "Ringing alarms and timers"
             setBypassDnd(true)
+            lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+            enableVibration(true)
         }
 
         notificationManager.createNotificationChannel(channel)
@@ -387,7 +395,6 @@ class MainActivity : FlutterActivity() {
         private const val ALARM_EVENTS_CHANNEL = "com.wakeywakey/alarm_events"
         private const val PERMISSIONS_CHANNEL = "com.wakeywakey/permissions"
         private const val GEOFENCE_CHANNEL = "com.wakeywakey/geofence"
-        private const val ALARM_NOTIFICATION_CHANNEL_ID = "alarm_alerts"
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1001
         private const val PICK_RINGTONE_REQUEST_CODE = 2001
     }

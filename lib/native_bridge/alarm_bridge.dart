@@ -127,8 +127,26 @@ class AlarmEvent {
 
   factory AlarmEvent.fromMap(Object? value) {
     final map = Map<Object?, Object?>.from(value! as Map<Object?, Object?>);
+    // Defensive coercions: the StandardMethodCodec can hand us back
+    // a long (Int64), a double, or — for a malformed payload — even
+    // a String, where the Kotlin side put an `int`. A bare `as int`
+    // would throw `TypeError` at runtime in any of those cases and
+    // tear down the EventChannel subscription. Instead, normalise to
+    // an int via `num` and throw a clear error if the value is
+    // missing or not coercible. The native side always sends a
+    // non-null Int for alarmId, so this only fires on a contract
+    // break.
+    final alarmIdValue = map['alarmId'];
+    final alarmId = alarmIdValue is num
+        ? alarmIdValue.toInt()
+        : alarmIdValue is String
+            ? int.tryParse(alarmIdValue)
+            : null;
+    if (alarmId == null) {
+      throw FormatException('AlarmEvent.fromMap: missing or non-int alarmId: $alarmIdValue');
+    }
     return AlarmEvent(
-      alarmId: map['alarmId']! as int,
+      alarmId: alarmId,
       type: AlarmEventType.fromName(map['type']! as String),
       triggerType: map['triggerType'] as String?,
     );

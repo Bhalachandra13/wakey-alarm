@@ -91,9 +91,10 @@ void main() {
       final notifier = container.read(alarmsNotifierProvider.notifier);
       final alarm = createTestAlarm(label: 'Morning Alarm');
 
-      final id = await notifier.insertAlarm(alarm);
+      final result = await notifier.insertAlarm(alarm);
 
-      expect(id, greaterThan(0));
+      expect(result.id, greaterThan(0));
+      expect(result.scheduled, isTrue);
 
       // Refresh and check
       final alarms = await container.read(alarmsNotifierProvider.future);
@@ -101,16 +102,49 @@ void main() {
       expect(alarms[0].label, equals('Morning Alarm'));
     });
 
+    test('insertAlarm reports scheduled=false when bridge rejects', () async {
+      fakeBridge.scheduleSuccess = false;
+      final notifier = container.read(alarmsNotifierProvider.notifier);
+      final alarm = createTestAlarm(label: 'Morning Alarm');
+
+      final result = await notifier.insertAlarm(alarm);
+
+      expect(result.id, greaterThan(0));
+      expect(result.scheduled, isFalse);
+      // The alarm is still inserted so the user can toggle it on
+      // again after granting the permission.
+      final alarms = await container.read(alarmsNotifierProvider.future);
+      expect(alarms, hasLength(1));
+      expect(alarms[0].isEnabled, isTrue);
+    });
+
     test('updateAlarm modifies existing alarm', () async {
       final notifier = container.read(alarmsNotifierProvider.notifier);
       final alarm = createTestAlarm(label: 'Original');
 
-      final id = await notifier.insertAlarm(alarm);
+      final result = await notifier.insertAlarm(alarm);
+      final id = result.id;
       final updated = alarm.copyWith(id: id, label: 'Updated');
-      await notifier.updateAlarm(updated);
+      final scheduled = await notifier.updateAlarm(updated);
 
+      expect(scheduled, isTrue);
       final alarms = await container.read(alarmsNotifierProvider.future);
       expect(alarms, hasLength(1));
+      expect(alarms[0].label, equals('Updated'));
+    });
+
+    test('updateAlarm reports scheduled=false when bridge rejects', () async {
+      fakeBridge.scheduleSuccess = false;
+      final notifier = container.read(alarmsNotifierProvider.notifier);
+      final alarm = createTestAlarm(label: 'Original');
+
+      final result = await notifier.insertAlarm(alarm);
+      final id = result.id;
+      final updated = alarm.copyWith(id: id, label: 'Updated');
+      final scheduled = await notifier.updateAlarm(updated);
+
+      expect(scheduled, isFalse);
+      final alarms = await container.read(alarmsNotifierProvider.future);
       expect(alarms[0].label, equals('Updated'));
     });
 
@@ -118,8 +152,8 @@ void main() {
       final notifier = container.read(alarmsNotifierProvider.notifier);
       final alarm = createTestAlarm();
 
-      final id = await notifier.insertAlarm(alarm);
-      await notifier.deleteAlarm(id);
+      final result = await notifier.insertAlarm(alarm);
+      await notifier.deleteAlarm(result.id);
 
       final alarms = await container.read(alarmsNotifierProvider.future);
       expect(alarms, isEmpty);
@@ -129,7 +163,8 @@ void main() {
       final notifier = container.read(alarmsNotifierProvider.notifier);
       final alarm = createTestAlarm(isEnabled: true);
 
-      final id = await notifier.insertAlarm(alarm);
+      final result = await notifier.insertAlarm(alarm);
+      final id = result.id;
       await notifier.toggleEnabled(id, false);
 
       final alarms = await container.read(alarmsNotifierProvider.future);
@@ -140,7 +175,8 @@ void main() {
       final notifier = container.read(alarmsNotifierProvider.notifier);
       final alarm = createTestAlarm(isArmed: false);
 
-      final id = await notifier.insertAlarm(alarm);
+      final result = await notifier.insertAlarm(alarm);
+      final id = result.id;
       await notifier.toggleArmed(id, true);
 
       final alarms = await container.read(alarmsNotifierProvider.future);
@@ -186,7 +222,8 @@ void main() {
       final notifier = container.read(alarmsNotifierProvider.notifier);
       final alarm = createTestAlarm(label: 'Test Alarm');
 
-      final id = await notifier.insertAlarm(alarm);
+      final result = await notifier.insertAlarm(alarm);
+      final id = result.id;
 
       final retrieved = await container.read(alarmByIdProvider(id).future);
       expect(retrieved, isNotNull);
@@ -219,14 +256,17 @@ class _FakeAlarmBridge implements AlarmBridge {
   _FakeAlarmBridge()
     : eventController = StreamController<AlarmEvent>.broadcast();
   final StreamController<AlarmEvent> eventController;
+  bool scheduleSuccess = true;
   @override
   Stream<AlarmEvent>? eventStream;
   @override
   Stream<AlarmEvent> get alarmEvents => eventController.stream;
   @override
-  Future<bool> scheduleAlarm(Map<String, Object?> payload) async => true;
+  Future<bool> scheduleAlarm(Map<String, Object?> payload) async =>
+      scheduleSuccess;
   @override
-  Future<bool> scheduleTimer(Map<String, Object?> payload) async => true;
+  Future<bool> scheduleTimer(Map<String, Object?> payload) async =>
+      scheduleSuccess;
   @override
   Future<bool> cancelAlarm(int alarmId) async => true;
   @override

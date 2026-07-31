@@ -1,5 +1,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- USE_EXACT_ALARM is the correct permission for a true alarm
+         clock app: it is a normal (install-time) permission, so the
+         user is never prompted. We keep SCHEDULE_EXACT_ALARM as a
+         fallback for OEMs that don't honour USE_EXACT_ALARM; the
+         canScheduleExactAlarms() check is satisfied if either is
+         granted. Without USE_EXACT_ALARM the "exact alarm needed"
+         banner would otherwise appear on every fresh install. -->
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.VIBRATE" />
@@ -21,7 +29,7 @@
 
     <application
         android:label="Wakey-Wakey"
-        android:name="${applicationName}"
+        android:name=".WakeyApplication"
         android:icon="@mipmap/ic_launcher">
         <!-- Google Maps API key. Replace the value with a real key
              from the Google Cloud Console before shipping. The

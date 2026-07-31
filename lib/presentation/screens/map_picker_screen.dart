@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:wakey_alarm/domain/geofence_validator.dart';
+import 'package:wakey_alarm/native_bridge/geofence_bridge.dart';
 
 /// Map-based location picker for creating a geofence alarm.
 ///
@@ -15,7 +17,7 @@ import 'package:wakey_alarm/domain/geofence_validator.dart';
 /// widget shows a blank canvas but the picker still works — the
 /// user can use the manual lat/long inputs as a fallback. This
 /// keeps the feature testable in CI without burning API quota.
-class MapPickerScreen extends StatefulWidget {
+class MapPickerScreen extends ConsumerStatefulWidget {
   const MapPickerScreen({
     super.key,
     this.initialLatitude,
@@ -30,12 +32,14 @@ class MapPickerScreen extends StatefulWidget {
   final int initialRadiusMeters;
 
   @override
-  State<MapPickerScreen> createState() => _MapPickerScreenState();
+  ConsumerState<MapPickerScreen> createState() => _MapPickerScreenState();
 }
 
-class _MapPickerScreenState extends State<MapPickerScreen> {
+class _MapPickerScreenState extends ConsumerState<MapPickerScreen> {
   late int _radiusMeters;
   LatLng? _pin;
+  GoogleMapController? _mapController;
+  bool _hasCenteredOnUser = false;
 
   @override
   void initState() {
@@ -46,10 +50,42 @@ class _MapPickerScreenState extends State<MapPickerScreen> {
     }
   }
 
-  void _updatePinFromCamera(LatLng target) {
-    setState(() {
-      _pin = target;
-    });
+  @override
+  void dispose() {
+    _mapController?.dispose();
+    super.dispose();
+  }
+
+  /// Best-effort recenter on the user's current location. Called
+  /// once after the map's first frame; silently no-ops if location
+  /// permission isn't granted yet, in which case the user can still
+  /// pan the map manually or use the my-location button to trigger
+  /// the OS permission prompt.
+  Future<void> _maybeCenterOnUser() async {
+    if (_hasCenteredOnUser) return;
+    final controller = _mapController;
+    if (controller == null) return;
+    // If the user passed in an existing pin, honour that — don't
+    // yank the camera away to the user's current location.
+    if (_pin != null) return;
+    _hasCenteredOnUser = true;
+    try {
+      final bridge = ref.read(geofenceBridgeProvider);
+      final here = await bridge.getCurrentLocation(
+        timeout: const Duration(seconds: 6),
+      );
+      if (here != null && mounted) {
+        await controller.animateCamera(
+          CameraUpdate.newLatLngZoom(
+            LatLng(here.latitude, here.longitude),
+            14,
+          ),
+        );
+      }
+    } on Object {
+      // Swallow — no location fix is a normal state (permission
+      // not granted, GPS off, etc.) and shouldn't break the picker.
+    }
   }
 
   void _setRadius(int meters) {
@@ -100,8 +136,18 @@ class _MapPickerScreenState extends State<MapPickerScreen> {
                     target: initialCameraTarget,
                     zoom: 12,
                   ),
-                  myLocationButtonEnabled: false,
+                  myLocationEnabled: true,
+                  myLocationButtonEnabled: true,
                   zoomControlsEnabled: true,
+                  onMapCreated: (controller) {
+                    _mapController = controller;
+                    // Wait for the first frame to be laid out
+                    // before panning; the controller isn't ready
+                    // to accept camera updates synchronously here.
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      _maybeCenterOnUser();
+                    });
+                  },
                   onCameraIdle: () {
                     // `onCameraIdle` doesn't expose the camera
                     // position, so we rely on `onCameraMoveStarted`
@@ -113,7 +159,9 @@ class _MapPickerScreenState extends State<MapPickerScreen> {
                     // Update the pin as the user pans so the
                     // "drop a pin" UX feels responsive. The user
                     // confirms with the check button.
-                    _updatePinFromCamera(position.target);
+                    setState(() {
+                      _pin = position.target;
+                    });
                   },
                   circles: _pin == null
                       ? <Circle>{}

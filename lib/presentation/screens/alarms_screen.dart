@@ -6,6 +6,8 @@ import 'package:wakey_alarm/presentation/providers/alarms_provider.dart';
 import 'package:wakey_alarm/presentation/providers/geofence_arming_controller.dart';
 import 'package:wakey_alarm/presentation/screens/background_location_explanation_screen.dart';
 import 'package:wakey_alarm/presentation/screens/edit_alarm_screen.dart';
+import 'package:wakey_alarm/presentation/widgets/exact_alarm_banner.dart';
+import 'package:wakey_alarm/presentation/widgets/notification_permission_banner.dart';
 
 class AlarmsScreen extends ConsumerWidget {
   const AlarmsScreen({super.key});
@@ -39,6 +41,8 @@ class AlarmsScreen extends ConsumerWidget {
       children: [
         if (ringingId != null)
           _RingingBanner(alarmLabel: ringingLabel ?? 'Alarm'),
+        const NotificationPermissionBanner(),
+        const ExactAlarmPermissionBanner(),
         const _GeofenceHealthBanner(),
         Expanded(
           child: alarmsAsyncValue.when(
@@ -106,8 +110,7 @@ class _GeofenceHealthBannerState extends ConsumerState<_GeofenceHealthBanner> {
     }
   }
 
-  bool get _hasIssue {
-    final alarms = ref.read(alarmsProvider).value;
+  bool _hasIssue(List<Alarm>? alarms) {
     if (alarms == null) return false;
     final hasArmedLocation = alarms.any(
       (a) => a.triggerType == AlarmTriggerType.location && a.isArmed,
@@ -123,7 +126,8 @@ class _GeofenceHealthBannerState extends ConsumerState<_GeofenceHealthBanner> {
 
   @override
   Widget build(BuildContext context) {
-    if (!_hasIssue) return const SizedBox.shrink();
+    final alarms = ref.watch(alarmsProvider).value;
+    if (!_hasIssue(alarms)) return const SizedBox.shrink();
     final theme = Theme.of(context);
     return Material(
       color: theme.colorScheme.tertiaryContainer,
@@ -370,13 +374,27 @@ class _AlarmListTile extends ConsumerWidget {
                 : () => _onArmToggle(context, ref, alarm),
           )
         else
-          // Toggle enabled/disabled for time-based alarms.
+          // Toggle enabled/disabled for time-based alarms. The
+          // onChanged is async because the native schedule call
+          // can fail (e.g. when SCHEDULE_EXACT_ALARM is not
+          // granted); we surface that failure to the user via
+          // a SnackBar pointing at the permission banner.
           Switch(
             value: alarm.isEnabled,
-            onChanged: (newValue) {
+            onChanged: (newValue) async {
               final notifier = ref.read(alarmsNotifierProvider.notifier);
-              if (alarm.id != null) {
-                notifier.toggleEnabled(alarm.id!, newValue);
+              if (alarm.id == null) return;
+              final ok = await notifier.toggleEnabled(alarm.id!, newValue);
+              if (!ok && context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                      'Could not schedule the alarm. Grant the '
+                      '"Alarms & reminders" permission, then try again.',
+                    ),
+                    duration: Duration(seconds: 5),
+                  ),
+                );
               }
             },
           ),
@@ -423,6 +441,11 @@ class _AlarmListTile extends ConsumerWidget {
             ],
           ),
         );
+      case ArmingOutcome.alreadyArmed:
+        // Defensive: the UI hides the arm button for already-armed
+        // alarms, but a race (e.g. another arming flow) could land
+        // us here. Treat it as a no-op success.
+        break;
       case ArmingOutcome.registrationFailed:
         ScaffoldMessenger.of(
           context,

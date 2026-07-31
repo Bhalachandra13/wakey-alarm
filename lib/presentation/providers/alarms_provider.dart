@@ -1,14 +1,23 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:wakey_alarm/data/alarm_dao.dart';
+import 'package:wakey_alarm/data/location_search_service.dart';
 import 'package:wakey_alarm/data/wakey_database.dart';
 import 'package:wakey_alarm/domain/alarm.dart';
 import 'package:wakey_alarm/domain/alarm_scheduler.dart';
 import 'package:wakey_alarm/native_bridge/alarm_bridge.dart';
 import 'package:wakey_alarm/native_bridge/geofence_bridge.dart';
+import 'package:wakey_alarm/native_bridge/permission_bridge.dart';
 
 /// Provides access to the [WakeyDatabase] singleton.
 final databaseProvider = Provider<WakeyDatabase>((ref) {
   return WakeyDatabase();
+});
+
+/// Provides the [PermissionBridge] singleton — a thin MethodChannel
+/// wrapper for the cross-cutting Android permissions we need to ask
+/// the user about from inside the app (exact alarm + notification).
+final permissionBridgeProvider = Provider<PermissionBridge>((ref) {
+  return PermissionBridge();
 });
 
 /// Provides access to the [AlarmDao] singleton.
@@ -20,6 +29,14 @@ final alarmDaoProvider = Provider<AlarmDao>((ref) {
 /// Provides the [AlarmBridge] singleton (MethodChannel + EventChannel wrappers).
 final alarmBridgeProvider = Provider<AlarmBridge>((ref) {
   return const AlarmBridge();
+});
+
+/// Provides the [LocationSearchService] used by the location tab
+/// of the alarm editor to look up addresses via OpenStreetMap
+/// Nominatim. Override in tests with a fake to avoid hitting the
+/// public endpoint.
+final locationSearchServiceProvider = Provider<LocationSearchService>((ref) {
+  return LocationSearchService();
 });
 
 /// Provides the [AlarmScheduler] that converts [Alarm] objects into native
@@ -134,29 +151,49 @@ class AlarmsNotifier extends AsyncNotifier<List<Alarm>> {
   }
 
   /// Insert a new alarm, schedule it if enabled, and refresh the list.
-  Future<int> insertAlarm(Alarm alarm) async {
+  ///
+  /// Returns a record containing the inserted DB id and a boolean
+  /// indicating whether the native schedule succeeded. For a disabled
+  /// alarm the schedule boolean is always `true` (there was nothing
+  /// to schedule). For an enabled alarm it is `false` when Android
+  /// rejected the `setAlarmClock` call, typically because
+  /// `SCHEDULE_EXACT_ALARM` is not granted.
+  Future<({int id, bool scheduled})> insertAlarm(Alarm alarm) async {
     final id = await _alarmDao.insert(alarm);
     // Schedule the alarm with the DB-assigned ID before refreshing the list.
-    if (alarm.isEnabled) {
-      final scheduled = alarm.copyWith(id: id);
-      await _scheduler.scheduleAlarm(scheduled);
+    // Location alarms are not scheduled via AlarmManager — they are armed
+    // through the GeofencingClient by [GeofenceArmingController] at a
+    // later moment. For those, `scheduled` is always `true` so the UI
+    // does not show a misleading "could not schedule" error.
+    var scheduled = true;
+    if (alarm.isEnabled && alarm.triggerType == AlarmTriggerType.time) {
+      scheduled = await _scheduler.scheduleAlarm(alarm.copyWith(id: id));
     }
     ref.invalidateSelf();
-    return id;
+    return (id: id, scheduled: scheduled);
   }
 
   /// Update an existing alarm, re-schedule or cancel as needed, and refresh.
-  Future<void> updateAlarm(Alarm alarm) async {
+  ///
+  /// Returns `true` if the native schedule operation succeeded (or
+  /// if there was nothing to schedule because the alarm is disabled).
+  /// Returns `false` if the alarm is enabled but Android rejected the
+  /// `setAlarmClock` call.
+  Future<bool> updateAlarm(Alarm alarm) async {
     await _alarmDao.update(alarm);
     // Cancel any existing schedule then re-schedule if still enabled.
     // Always cancel first to avoid stale PendingIntents from the old time.
+    // Location alarms are not managed by AlarmManager — see
+    // [insertAlarm] for the rationale.
+    var scheduled = true;
     if (alarm.id != null) {
       await _scheduler.cancelAlarm(alarm.id!);
-      if (alarm.isEnabled) {
-        await _scheduler.scheduleAlarm(alarm);
+      if (alarm.isEnabled && alarm.triggerType == AlarmTriggerType.time) {
+        scheduled = await _scheduler.scheduleAlarm(alarm);
       }
     }
     ref.invalidateSelf();
+    return scheduled;
   }
 
   /// Delete an alarm by ID, cancel its schedule, and refresh the list.
@@ -167,18 +204,40 @@ class AlarmsNotifier extends AsyncNotifier<List<Alarm>> {
   }
 
   /// Toggle the enabled state of an alarm and schedule/cancel accordingly.
-  Future<void> toggleEnabled(int id, bool newState) async {
+  ///
+  /// Returns `true` if the native side reports the alarm was actually
+  /// scheduled. For an enable, this is the return value of
+  /// [AlarmScheduler.scheduleAlarm], which is `false` when Android
+  /// rejected the `setAlarmClock` call (typically because
+  /// `SCHEDULE_EXACT_ALARM` is not granted). For a disable, returns
+  /// `true` unconditionally — cancelling an unscheduled alarm is
+  /// always a no-op success.
+  ///
+  /// Even when this returns `false`, the sqflite row is updated to
+  /// reflect the user's intent (toggle ON). This is intentional: the
+  /// UI's "armed" indicator is driven by the DB, and the user has
+  /// expressed they want this alarm. The native side will pick up
+  /// the schedule the next time the exact-alarm permission is
+  /// granted (see [_ExactAlarmPermissionBanner]). The caller should
+  /// surface the failure to the user (e.g. with a SnackBar pointing
+  /// at the permission banner) so they understand why the alarm
+  /// didn't actually fire.
+  Future<bool> toggleEnabled(int id, bool newState) async {
     await _alarmDao.updateEnabled(id, newState);
+    bool nativeOk = true;
     if (newState) {
       // Re-read the full alarm to get all fields needed for scheduling.
+      // Location alarms are not managed by AlarmManager — see
+      // [insertAlarm] for the rationale.
       final alarm = await _alarmDao.read(id);
-      if (alarm != null) {
-        await _scheduler.scheduleAlarm(alarm);
+      if (alarm != null && alarm.triggerType == AlarmTriggerType.time) {
+        nativeOk = await _scheduler.scheduleAlarm(alarm);
       }
     } else {
       await _scheduler.cancelAlarm(id);
     }
     ref.invalidateSelf();
+    return nativeOk;
   }
 
   /// Toggle the armed state of an alarm (for location-based alarms).
@@ -240,7 +299,11 @@ final ringingAlarmIdProvider = StreamProvider<int?>((ref) async* {
   yield null;
   await for (final event in bridge.alarmEvents) {
     // Timer fires share the alarm pipeline; the "alarm is ringing"
-    // banner is for wall-clock alarms only, so suppress them here.
+    // banner is for wall-clock and geofence alarms only, so
+    // suppress timer fires here. (The RingingActivity itself does
+    // prefix the label with "Timer:" when the trigger type is a
+    // timer, so timer fires still get a ringing UI — just not the
+    // in-app banner.)
     if (event.triggerType == 'timer') continue;
     switch (event.type) {
       case AlarmEventType.fired:

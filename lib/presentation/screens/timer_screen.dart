@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:wakey_alarm/domain/timer_record.dart';
 import 'package:wakey_alarm/presentation/providers/timers_provider.dart';
+import 'package:wakey_alarm/presentation/widgets/exact_alarm_banner.dart';
 
 /// The Timer tab. Lists all active (RUNNING/PAUSED) timers and
 /// offers a FAB to create a new one. Mirrors the layout of the
@@ -17,43 +18,57 @@ class TimerScreen extends ConsumerWidget {
 
     return Stack(
       children: [
-        timersAsync.when(
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (e, _) => Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.error_outline, size: 48, color: Colors.red),
-                  const SizedBox(height: 12),
-                  Text(
-                    'Could not load timers',
-                    style: Theme.of(context).textTheme.titleMedium,
-                    textAlign: TextAlign.center,
+        Column(
+          children: [
+            const ExactAlarmPermissionBanner(),
+            Expanded(
+              child: timersAsync.when(
+                loading: () => const Center(child: CircularProgressIndicator()),
+                error: (e, _) => Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.error_outline,
+                          size: 48,
+                          color: Colors.red,
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          'Could not load timers',
+                          style: Theme.of(context).textTheme.titleMedium,
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          // Show the error's `toString()` but cap its
+                          // length to a single line so a multi-kilobyte
+                          // stack trace doesn't blow up the layout in
+                          // the 800x600 default test surface.
+                          e.toString().split('\n').first,
+                          style: Theme.of(context).textTheme.bodySmall,
+                          textAlign: TextAlign.center,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
                   ),
-                  const SizedBox(height: 8),
-                  Text(
-                    // Show the error's `toString()` but cap its
-                    // length to a single line so a multi-kilobyte
-                    // stack trace doesn't blow up the layout in
-                    // the 800x600 default test surface.
-                    e.toString().split('\n').first,
-                    style: Theme.of(context).textTheme.bodySmall,
-                    textAlign: TextAlign.center,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ],
+                ),
+                data: (timers) {
+                  if (timers.isEmpty) {
+                    return const _EmptyTimersView();
+                  }
+                  return _TimersList(
+                    timers: timers,
+                    liveRemaining: liveRemaining,
+                  );
+                },
               ),
             ),
-          ),
-          data: (timers) {
-            if (timers.isEmpty) {
-              return const _EmptyTimersView();
-            }
-            return _TimersList(timers: timers, liveRemaining: liveRemaining);
-          },
+          ],
         ),
         Positioned(
           right: 16,
@@ -179,13 +194,24 @@ class _TimerCard extends ConsumerWidget {
               IconButton(
                 icon: Icon(isRunning ? Icons.pause : Icons.play_arrow),
                 tooltip: isRunning ? 'Pause' : 'Resume',
-                onPressed: () {
+                onPressed: () async {
                   if (timer.id == null) return;
                   final notifier = ref.read(timersProvider.notifier);
                   if (isRunning) {
-                    notifier.pause(timer.id!);
+                    await notifier.pause(timer.id!);
                   } else {
-                    notifier.resume(timer.id!);
+                    final ok = await notifier.resume(timer.id!);
+                    if (!ok && context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            'Could not resume the timer. Grant the '
+                            '"Alarms & reminders" permission, then try again.',
+                          ),
+                          duration: Duration(seconds: 5),
+                        ),
+                      );
+                    }
                   }
                 },
               ),
@@ -248,13 +274,25 @@ class _CreateTimerScreenState extends ConsumerState<CreateTimerScreen> {
       return;
     }
     final notifier = ref.read(timersProvider.notifier);
-    await notifier.create(
+    final ok = await notifier.create(
       label: _labelController.text.trim().isEmpty
           ? 'Timer'
           : _labelController.text.trim(),
       durationSeconds: _totalSeconds,
       vibrate: _vibrate,
     );
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Could not start the timer. Grant the '
+            '"Alarms & reminders" permission, then try again.',
+          ),
+          duration: Duration(seconds: 5),
+        ),
+      );
+      return;
+    }
     if (mounted) Navigator.of(context).pop();
   }
 
@@ -354,49 +392,48 @@ class _CreateTimerScreenState extends ConsumerState<CreateTimerScreen> {
                 onChanged: (v) => setState(() => _vibrate = v),
               ),
             ),
-            const SizedBox(height: 32),
-
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                    child: const Text('Cancel'),
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: _start,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: theme.colorScheme.primary,
-                      foregroundColor: theme.colorScheme.onPrimary,
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      elevation: 0,
-                    ),
-                    child: const Text('Start'),
-                  ),
-                ),
-              ],
-            ),
+            const SizedBox(height: 8),
           ],
         ),
       ),
+      persistentFooterButtons: _buildActionButtons(),
     );
+  }
+
+  List<Widget> _buildActionButtons() {
+    final theme = Theme.of(context);
+    return [
+      OutlinedButton(
+        onPressed: () => Navigator.of(context).pop(),
+        style: OutlinedButton.styleFrom(
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
+        child: const Text('Cancel'),
+      ),
+      ElevatedButton(
+        onPressed: _start,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: theme.colorScheme.primary,
+          foregroundColor: theme.colorScheme.onPrimary,
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          elevation: 0,
+        ),
+        child: const Text('Start'),
+      ),
+    ];
   }
 }
 
-class _DurationStepper extends StatelessWidget {
-  const _DurationStepper({
+@visibleForTesting
+class DurationStepper extends StatelessWidget {
+  const DurationStepper({
+    super.key,
     required this.label,
     required this.value,
     required this.min,
@@ -422,15 +459,24 @@ class _DurationStepper extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 4),
+        // The inner Row uses mainAxisSize.min so the stepper
+        // shrinks to fit (-/number/+) instead of stretching each
+        // child to fill the parent column width. The IconButtons
+        // get visualDensity.compact so each one is ~32dp wide
+        // instead of the default 48dp; three of those plus the
+        // 48dp number fit in a 338dp column on a Pixel 8, whereas
+        // 48dp buttons overflowed by ~26dp.
         Row(
+          mainAxisSize: MainAxisSize.min,
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             IconButton(
               icon: const Icon(Icons.remove_circle_outline),
+              visualDensity: VisualDensity.compact,
               onPressed: value > min ? () => onChanged(value - 1) : null,
             ),
             SizedBox(
-              width: 48,
+              width: 40,
               child: Text(
                 value.toString().padLeft(2, '0'),
                 textAlign: TextAlign.center,
@@ -439,6 +485,7 @@ class _DurationStepper extends StatelessWidget {
             ),
             IconButton(
               icon: const Icon(Icons.add_circle_outline),
+              visualDensity: VisualDensity.compact,
               onPressed: value < max ? () => onChanged(value + 1) : null,
             ),
           ],
@@ -446,4 +493,16 @@ class _DurationStepper extends StatelessWidget {
       ],
     );
   }
+}
+
+// Internal alias: the rest of the file (the form scaffold) still uses
+// the private alias _DurationStepper to keep the diff minimal.
+class _DurationStepper extends DurationStepper {
+  const _DurationStepper({
+    required super.label,
+    required super.value,
+    required super.min,
+    required super.max,
+    required super.onChanged,
+  });
 }

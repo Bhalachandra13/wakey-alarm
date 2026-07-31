@@ -216,6 +216,17 @@ object AlarmScheduler {
     }
 
     /**
+     * Read every persisted [AlarmData] entry. Exposed publicly so
+     * [BootReceiver] can filter out transient entries (e.g. timers)
+     * before re-scheduling after reboot.
+     */
+    fun readAllPersisted(context: Context): List<AlarmData> {
+        val prefs = context.applicationContext
+            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return readAllInternal(prefs)
+    }
+
+    /**
      * Re-schedule an alarm using its persisted metadata. Computes
      * the next fire time with [NextAlarmTime.compute], which
      * naturally handles both repeating (next matching day-of-week)
@@ -251,9 +262,14 @@ object AlarmScheduler {
      */
     fun rescheduleAllPersisted(context: Context): Int {
         val all = readAllPersisted(context)
-        Log.d(TAG, "Boot: re-scheduling ${all.size} persisted alarms")
+        // Re-scheduling timers on boot is wrong — their fire time is
+        // a countdown relative to the moment they were started, not a
+        // wall-clock time. See the class-level comment and the
+        // BootReceiver implementation for details.
+        val timeOnly = all.filter { it.triggerType == "TIME" }
+        Log.d(TAG, "Boot: re-scheduling ${timeOnly.size} time alarms")
         var ok = 0
-        for (data in all) {
+        for (data in timeOnly) {
             val fresh = data.copy(currentSnoozeCount = 0)
             val triggerAtMillis = NextAlarmTime.compute(
                 fresh.timeHour,
@@ -322,7 +338,16 @@ object AlarmScheduler {
     // SharedPreferences persistence
     // -------------------------------------------------------------------------
 
-    private fun persistAlarmData(context: Context, data: AlarmData) {
+    /**
+     * Persist alarm metadata to SharedPreferences without actually
+     * scheduling an AlarmManager alarm. Used by the geofence feature:
+     * geofence alarms don't use AlarmManager for their trigger, but
+     * when a geofence fires we need the persisted metadata (label,
+     * sound, vibrate, snooze settings) to drive the ringing UI and
+     * the snooze/dismiss state machine. The boot receiver will skip
+     * entries whose triggerType is not "TIME" (see [BootReceiver]).
+     */
+    fun persistAlarmData(context: Context, data: AlarmData) {
         val prefs = context.applicationContext
             .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val all = readAllInternal(prefs).toMutableList()
@@ -331,19 +356,17 @@ object AlarmScheduler {
         writeAllInternal(prefs, all)
     }
 
-    private fun removePersistedAlarmData(context: Context, alarmId: Int) {
+    /**
+     * Remove persisted metadata for [alarmId]. Idempotent — safe to
+     * call for an alarm that was never persisted.
+     */
+    fun removePersistedAlarmData(context: Context, alarmId: Int) {
         val prefs = context.applicationContext
             .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val all = readAllInternal(prefs).toMutableList()
         if (all.removeAll { it.alarmId == alarmId }) {
             writeAllInternal(prefs, all)
         }
-    }
-
-    private fun readAllPersisted(context: Context): List<AlarmData> {
-        val prefs = context.applicationContext
-            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return readAllInternal(prefs)
     }
 
     private fun readAllInternal(prefs: SharedPreferences): List<AlarmData> {

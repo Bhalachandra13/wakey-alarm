@@ -16,20 +16,23 @@ class MockAlarmsNotifier extends AlarmsNotifier {
     return savedAlarms;
   }
 
+  bool scheduleSucceeds = true;
+
   @override
-  Future<int> insertAlarm(Alarm alarm) async {
+  Future<({int id, bool scheduled})> insertAlarm(Alarm alarm) async {
     savedAlarms.add(alarm);
     ref.invalidateSelf();
-    return 1;
+    return (id: 1, scheduled: scheduleSucceeds);
   }
 
   @override
-  Future<void> updateAlarm(Alarm alarm) async {
+  Future<bool> updateAlarm(Alarm alarm) async {
     final index = savedAlarms.indexWhere((a) => a.id == alarm.id);
     if (index != -1) {
       savedAlarms[index] = alarm;
     }
     ref.invalidateSelf();
+    return scheduleSucceeds;
   }
 }
 
@@ -147,6 +150,7 @@ void main() {
     await tester.pumpWidget(createWidgetUnderTest(alarm: testAlarm));
     await tester.pumpAndSettle();
 
+    await tester.ensureVisible(find.text('Change'));
     await tester.tap(find.text('Change'));
     await tester.pumpAndSettle();
 
@@ -181,10 +185,65 @@ void main() {
 
     expect(find.text('Reset'), findsOneWidget);
 
+    await tester.ensureVisible(find.text('Reset'));
     await tester.tap(find.text('Reset'));
     await tester.pumpAndSettle();
 
     expect(find.text('Default alarm sound'), findsOneWidget);
     expect(find.text('Reset'), findsNothing);
+  });
+
+  testWidgets('shows snackbar when schedule fails in add mode', (
+    tester,
+  ) async {
+    mockNotifier.scheduleSucceeds = false;
+    await tester.pumpWidget(createWidgetUnderTest());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Save'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(
+      find.textContaining('could not be scheduled'),
+      findsOneWidget,
+      reason: 'User should be told the alarm was saved but not scheduled',
+    );
+    expect(
+      find.textContaining('Alarms & reminders'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('shows snackbar when schedule fails in edit mode', (
+    tester,
+  ) async {
+    final now = DateTime.now().toIso8601String();
+    final testAlarm = Alarm(
+      id: 1,
+      label: 'test',
+      triggerType: AlarmTriggerType.time,
+      timeHour: 7,
+      timeMinute: 0,
+      isEnabled: true,
+      isArmed: false,
+      soundUri: '',
+      vibrate: true,
+      snoozeDurationMin: 10,
+      createdAt: now,
+      updatedAt: now,
+    );
+    mockNotifier.scheduleSucceeds = false;
+    await tester.pumpWidget(createWidgetUnderTest(alarm: testAlarm));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Save'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(
+      find.textContaining('could not be scheduled'),
+      findsOneWidget,
+    );
   });
 }

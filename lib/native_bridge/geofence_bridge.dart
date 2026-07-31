@@ -109,12 +109,23 @@ class GeofenceBridge {
   /// because the user's expectation of a one-shot geofence alarm
   /// ("wake me up when I get to X") is that it stays armed until
   /// they disarm it.
+  ///
+  /// The [label], [soundUri], [vibrate], [snoozeDurationMin] and
+  /// [maxSnoozeCount] fields are persisted alongside the geofence
+  /// registration so that the native ringing UI and the boot-time
+  /// re-arming logic have access to the alarm's metadata even when
+  /// the Flutter engine is not running.
   Future<bool> addGeofence({
     required int alarmId,
     required double latitude,
     required double longitude,
     required int radiusMeters,
     int expirationMillis = -1, // -1 == NEVER_EXPIRE on the native side
+    String label = 'Alarm',
+    String soundUri = '',
+    bool vibrate = true,
+    int snoozeDurationMin = 10,
+    int maxSnoozeCount = -1,
   }) async {
     final result = await _methodChannel
         .invokeMapMethod<String, Object?>('addGeofence', <String, Object?>{
@@ -123,6 +134,11 @@ class GeofenceBridge {
           'longitude': longitude,
           'radiusMeters': radiusMeters,
           'expirationMillis': expirationMillis,
+          'label': label,
+          'soundUri': soundUri,
+          'vibrate': vibrate,
+          'snoozeDurationMin': snoozeDurationMin,
+          'maxSnoozeCount': maxSnoozeCount,
         });
     return result?['added'] == true;
   }

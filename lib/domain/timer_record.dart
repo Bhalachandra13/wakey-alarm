@@ -65,6 +65,7 @@ class TimerRecord {
     required this.remainingSeconds,
     required this.state,
     this.startedAt,
+    this.snoozeDurationMin = defaultSnoozeDurationMin,
   });
 
   /// Auto-increment DB id. Null for a not-yet-inserted record.
@@ -91,6 +92,19 @@ class TimerRecord {
   /// user-visible timers, but defensively nullable per the schema).
   final String? startedAt;
 
+  /// How many minutes the native side will re-schedule the timer for
+  /// if the user taps Snooze in the ringing UI. Persisted in the DB
+  /// so that the value survives a pause/resume cycle. Defaults to
+  /// [defaultSnoozeDurationMin] (5 minutes — shorter than the
+  /// typical alarm snooze because timer fires are usually more
+  /// intentional than wake-up alarms).
+  final int snoozeDurationMin;
+
+  /// Default snooze duration used when no value was supplied (e.g.
+  /// for legacy DB rows that pre-date the v2 schema, or for callers
+  /// that don't care to specify one).
+  static const int defaultSnoozeDurationMin = 5;
+
   bool get isActive =>
       state == TimerState.running || state == TimerState.paused;
 
@@ -101,6 +115,7 @@ class TimerRecord {
     int? remainingSeconds,
     TimerState? state,
     String? startedAt,
+    int? snoozeDurationMin,
   }) {
     return TimerRecord(
       id: id ?? this.id,
@@ -109,6 +124,7 @@ class TimerRecord {
       remainingSeconds: remainingSeconds ?? this.remainingSeconds,
       state: state ?? this.state,
       startedAt: startedAt ?? this.startedAt,
+      snoozeDurationMin: snoozeDurationMin ?? this.snoozeDurationMin,
     );
   }
 
@@ -120,10 +136,19 @@ class TimerRecord {
       'remaining_seconds': remainingSeconds,
       'state': state.value,
       'started_at': startedAt,
+      'snooze_duration_min': snoozeDurationMin,
     };
   }
 
   factory TimerRecord.fromJson(Map<String, Object?> json) {
+    // Pre-v2 rows don't have a `snooze_duration_min` column; fall
+    // back to the default so older DBs still load cleanly.
+    final snooze = json['snooze_duration_min'];
+    final snoozeDurationMin = snooze is int
+        ? snooze
+        : snooze is num
+            ? snooze.toInt()
+            : defaultSnoozeDurationMin;
     return TimerRecord(
       id: json['id'] as int?,
       label: json['label'] as String,
@@ -131,6 +156,7 @@ class TimerRecord {
       remainingSeconds: json['remaining_seconds'] as int,
       state: TimerState.fromValue(json['state'] as String),
       startedAt: json['started_at'] as String?,
+      snoozeDurationMin: snoozeDurationMin,
     );
   }
 
@@ -144,7 +170,8 @@ class TimerRecord {
           durationSeconds == other.durationSeconds &&
           remainingSeconds == other.remainingSeconds &&
           state == other.state &&
-          startedAt == other.startedAt;
+          startedAt == other.startedAt &&
+          snoozeDurationMin == other.snoozeDurationMin;
 
   @override
   int get hashCode => Object.hash(
@@ -154,10 +181,12 @@ class TimerRecord {
     remainingSeconds,
     state,
     startedAt,
+    snoozeDurationMin,
   );
 
   @override
   String toString() =>
       'TimerRecord(id: $id, label: $label, '
-      'remaining: ${remainingSeconds}s, state: ${state.value})';
+      'remaining: ${remainingSeconds}s, state: ${state.value}, '
+      'snooze: ${snoozeDurationMin}m)';
 }

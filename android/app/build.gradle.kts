@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
@@ -27,8 +29,18 @@ android {
         // but the rest of the geofence feature still works. Set
         // MAPS_API_KEY in android/local.properties (or your CI secrets)
         // to a real Google Maps API key to enable tile rendering.
+        //
+        // We have to read local.properties explicitly: gradle does not
+        // surface its entries via `project.findProperty`, so without
+        // this block the placeholder would silently fall back to
+        // "DEV_NO_KEY" and the map would render blank.
+        val localProps = Properties()
+        val localPropsFile = rootProject.file("local.properties")
+        if (localPropsFile.exists()) {
+            localPropsFile.inputStream().use { localProps.load(it) }
+        }
         manifestPlaceholders["MAPS_API_KEY"] =
-            (project.findProperty("MAPS_API_KEY") as String?) ?: "DEV_NO_KEY"
+            localProps.getProperty("MAPS_API_KEY") ?: "DEV_NO_KEY"
     }
 
     buildTypes {
@@ -48,4 +60,13 @@ kotlin {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // Google Play Services Location: provides GeofencingClient,
+    // FusedLocationProviderClient, and Priority constants used by
+    // GeofenceController.kt and GeofenceTransitionReceiver.kt.
+    // Version pinned to match the rest of the play-services-* family
+    // transitively pulled in by google_maps_flutter.
+    implementation("com.google.android.gms:play-services-location:21.3.0")
 }

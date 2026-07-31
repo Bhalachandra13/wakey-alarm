@@ -66,6 +66,11 @@ class _FakeGeofenceBridge extends GeofenceBridge {
     required double longitude,
     required int radiusMeters,
     int expirationMillis = -1,
+    String label = 'Alarm',
+    String soundUri = '',
+    bool vibrate = true,
+    int snoozeDurationMin = 10,
+    int maxSnoozeCount = -1,
   }) async {
     addCalls.add({
       'alarmId': alarmId,
@@ -73,6 +78,11 @@ class _FakeGeofenceBridge extends GeofenceBridge {
       'longitude': longitude,
       'radiusMeters': radiusMeters,
       'expirationMillis': expirationMillis,
+      'label': label,
+      'soundUri': soundUri,
+      'vibrate': vibrate,
+      'snoozeDurationMin': snoozeDurationMin,
+      'maxSnoozeCount': maxSnoozeCount,
     });
     return addResult;
   }
@@ -189,6 +199,36 @@ void main() {
       // The DB row should now have is_armed=true.
       final updated = await dao.read(id);
       expect(updated!.isArmed, isTrue);
+    });
+
+    test('passes alarm metadata to the geofence bridge for native persistence', () async {
+      await container.read(alarmsNotifierProvider.future);
+      fakeGeofenceBridge.currentLocation = const GeoPoint(
+        latitude: 52.4862,
+        longitude: -1.8904,
+      );
+
+      final dao = container.read(alarmDaoProvider);
+      final id = await dao.insert(
+        createLocationAlarm().copyWith(
+          label: 'Train stop',
+          soundUri: 'content://media/alarms/train',
+          vibrate: false,
+          snoozeDurationMin: 7,
+          maxSnoozeCount: 3,
+        ),
+      );
+
+      final controller = container.read(geofenceArmingControllerProvider);
+      final result = await controller.armAlarm((await dao.read(id))!);
+
+      expect(result.outcome, ArmingOutcome.armed);
+      final call = fakeGeofenceBridge.addCalls.single;
+      expect(call['label'], 'Train stop');
+      expect(call['soundUri'], 'content://media/alarms/train');
+      expect(call['vibrate'], isFalse);
+      expect(call['snoozeDurationMin'], 7);
+      expect(call['maxSnoozeCount'], 3);
     });
 
     test('returns invalidAlarm for a time-based alarm', () async {

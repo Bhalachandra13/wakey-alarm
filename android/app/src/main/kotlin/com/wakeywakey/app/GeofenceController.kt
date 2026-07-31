@@ -133,6 +133,11 @@ object GeofenceController {
                         null,
                     )
                     val expiration = (args?.get("expirationMillis") as? Number)?.toLong() ?: -1L
+                    val label = (args?.get("label") as? String) ?: "Alarm"
+                    val soundUri = (args?.get("soundUri") as? String) ?: ""
+                    val vibrate = (args?.get("vibrate") as? Boolean) ?: true
+                    val snoozeDurationMin = (args?.get("snoozeDurationMin") as? Number)?.toInt() ?: 10
+                    val maxSnoozeCount = (args?.get("maxSnoozeCount") as? Number)?.toInt() ?: -1
                     addGeofence(
                         context,
                         alarmId,
@@ -140,6 +145,11 @@ object GeofenceController {
                         lon,
                         radius,
                         expiration,
+                        label,
+                        soundUri,
+                        vibrate,
+                        snoozeDurationMin,
+                        maxSnoozeCount,
                         result,
                     )
                 }
@@ -301,6 +311,11 @@ object GeofenceController {
         longitude: Double,
         radiusMeters: Int,
         expirationMillis: Long,
+        label: String,
+        soundUri: String,
+        vibrate: Boolean,
+        snoozeDurationMin: Int,
+        maxSnoozeCount: Int,
         result: MethodChannel.Result,
     ) {
         if (alarmId < 0) {
@@ -345,6 +360,25 @@ object GeofenceController {
         client.addGeofences(request, pendingIntent)
             .addOnSuccessListener {
                 Log.d(TAG, "Geofence added for alarmId=$alarmId")
+                // Persist the alarm metadata so that if the device
+                // reboots while the trip is in progress we can re-
+                // register the geofence, and so the ringing UI has
+                // access to label/sound/vibrate/snooze settings when
+                // the geofence fires while the app process is dead.
+                val data = AlarmScheduler.AlarmData(
+                    alarmId = alarmId,
+                    timeHour = 0,
+                    timeMinute = 0,
+                    repeatDays = null,
+                    label = label,
+                    soundUri = soundUri,
+                    vibrate = vibrate,
+                    snoozeDurationMin = snoozeDurationMin,
+                    maxSnoozeCount = maxSnoozeCount,
+                    currentSnoozeCount = 0,
+                    triggerType = "LOCATION",
+                )
+                AlarmScheduler.persistAlarmData(context, data)
                 result.success(mapOf("added" to true))
             }
             .addOnFailureListener { e ->
@@ -369,6 +403,9 @@ object GeofenceController {
         client.removeGeofences(pendingIntent)
             .addOnSuccessListener {
                 Log.d(TAG, "Geofence removed for alarmId=$alarmId")
+                // Clean up the persisted metadata so we don't try to
+                // re-arm a geofence that the user explicitly disarmed.
+                AlarmScheduler.removePersistedAlarmData(context, alarmId)
                 result.success(mapOf("removed" to true))
             }
             .addOnFailureListener { e ->

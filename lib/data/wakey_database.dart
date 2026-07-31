@@ -6,7 +6,7 @@ class WakeyDatabase {
     : _databaseFactory = databaseFactory ?? sqflite.databaseFactory;
 
   static const databaseName = 'wakey_wakey.db';
-  static const databaseVersion = 1;
+  static const databaseVersion = 2;
 
   final sqflite.DatabaseFactory _databaseFactory;
   final String? databasePath;
@@ -70,7 +70,8 @@ class WakeyDatabase {
         duration_seconds INTEGER NOT NULL,
         remaining_seconds INTEGER NOT NULL,
         state TEXT NOT NULL,
-        started_at TEXT
+        started_at TEXT,
+        snooze_duration_min INTEGER NOT NULL DEFAULT 5
       )
     ''');
   }
@@ -82,7 +83,16 @@ class WakeyDatabase {
   ) async {
     for (var version = oldVersion + 1; version <= newVersion; version++) {
       switch (version) {
-        case databaseVersion:
+        case 2:
+          // v1 → v2: timers table gains `snooze_duration_min`.
+          // Existing rows default to 5 minutes, matching the
+          // hard-coded value the Dart side used to fall back to
+          // before this column existed (see `TimerRecord.default
+          // SnoozeDurationMin`).
+          await db.execute(
+            'ALTER TABLE timers ADD COLUMN snooze_duration_min '
+            'INTEGER NOT NULL DEFAULT 5',
+          );
           break;
         default:
           throw UnsupportedError('No migration registered for v$version');

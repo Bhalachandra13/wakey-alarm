@@ -18,6 +18,7 @@ class _FakeAlarmBridge implements AlarmBridge {
   // Recorded schedule calls so tests can assert.
   List<Map<String, Object?>> scheduledTimers = [];
   List<int> cancelledIds = [];
+  bool scheduleTimerSuccess = true;
 
   @override
   Stream<AlarmEvent>? eventStream;
@@ -28,7 +29,7 @@ class _FakeAlarmBridge implements AlarmBridge {
   @override
   Future<bool> scheduleTimer(Map<String, Object?> payload) async {
     scheduledTimers.add(Map.of(payload));
-    return true;
+    return scheduleTimerSuccess;
   }
 
   @override
@@ -112,18 +113,21 @@ void main() {
         expect(initial, isEmpty);
 
         final notifier = container.read(timersProvider.notifier);
-        final id = await notifier.create(
+        final ok = await notifier.create(
           label: 'Boil eggs',
           durationSeconds: 300,
         );
 
-        expect(id, greaterThan(0));
+        expect(ok, isTrue);
         expect(fakeBridge.scheduledTimers, hasLength(1));
         final payload = fakeBridge.scheduledTimers.single;
-        expect(payload['alarmId'], id);
         expect(payload['label'], 'Boil eggs');
         expect(payload['triggerAtMillis'], isA<int>());
         expect(payload['triggerAtMillis'] as int, greaterThan(0));
+
+        final list = await container.read(timersProvider.future);
+        expect(list, hasLength(1));
+        expect(list.first.state, TimerState.running);
       },
     );
 
@@ -137,15 +141,29 @@ void main() {
 
     test('create() falls back to "Timer" when label is empty', () async {
       final notifier = container.read(timersProvider.notifier);
-      await notifier.create(label: '', durationSeconds: 60);
+      final ok = await notifier.create(label: '', durationSeconds: 60);
+      expect(ok, isTrue);
       expect(fakeBridge.scheduledTimers.single['label'], 'Timer');
+    });
+
+    test('create() returns false and rolls back when schedule is rejected',
+        () async {
+      fakeBridge.scheduleTimerSuccess = false;
+      final notifier = container.read(timersProvider.notifier);
+      final ok = await notifier.create(label: 'x', durationSeconds: 60);
+
+      expect(ok, isFalse);
+      expect(fakeBridge.scheduledTimers, hasLength(1));
+      final list = await container.read(timersProvider.future);
+      expect(list, isEmpty);
     });
 
     test(
       'cancel() removes the row and calls cancelAlarm on the bridge',
       () async {
         final notifier = container.read(timersProvider.notifier);
-        final id = await notifier.create(label: 'x', durationSeconds: 60);
+        await notifier.create(label: 'x', durationSeconds: 60);
+        final id = (await container.read(timersProvider.future)).first.id!;
         await notifier.cancel(id);
         expect(fakeBridge.cancelledIds, contains(id));
         final list = await container.read(timersProvider.future);
@@ -155,7 +173,8 @@ void main() {
 
     test('pause() flips state to PAUSED and cancels native schedule', () async {
       final notifier = container.read(timersProvider.notifier);
-      final id = await notifier.create(label: 'x', durationSeconds: 600);
+      await notifier.create(label: 'x', durationSeconds: 600);
+      final id = (await container.read(timersProvider.future)).first.id!;
       fakeBridge.cancelledIds.clear();
       await notifier.pause(id);
       expect(fakeBridge.cancelledIds, contains(id));
@@ -165,7 +184,8 @@ void main() {
 
     test('pause() is a no-op if the timer is already paused', () async {
       final notifier = container.read(timersProvider.notifier);
-      final id = await notifier.create(label: 'x', durationSeconds: 600);
+      await notifier.create(label: 'x', durationSeconds: 600);
+      final id = (await container.read(timersProvider.future)).first.id!;
       await notifier.pause(id);
       fakeBridge.cancelledIds.clear();
       await notifier.pause(id);
@@ -175,21 +195,41 @@ void main() {
 
     test('resume() flips state back to RUNNING and re-schedules', () async {
       final notifier = container.read(timersProvider.notifier);
-      final id = await notifier.create(label: 'x', durationSeconds: 600);
+      await notifier.create(label: 'x', durationSeconds: 600);
+      final id = (await container.read(timersProvider.future)).first.id!;
       await notifier.pause(id);
       fakeBridge.scheduledTimers.clear();
-      await notifier.resume(id);
+      final ok = await notifier.resume(id);
+      expect(ok, isTrue);
       expect(fakeBridge.scheduledTimers, hasLength(1));
       final list = await container.read(timersProvider.future);
       expect(list.first.state, TimerState.running);
     });
 
+    test('resume() returns false and leaves timer paused when schedule fails',
+        () async {
+      final notifier = container.read(timersProvider.notifier);
+      await notifier.create(label: 'x', durationSeconds: 600);
+      final id = (await container.read(timersProvider.future)).first.id!;
+      await notifier.pause(id);
+      fakeBridge.scheduleTimerSuccess = false;
+      fakeBridge.scheduledTimers.clear();
+      final ok = await notifier.resume(id);
+      expect(ok, isFalse);
+      expect(fakeBridge.scheduledTimers, hasLength(1));
+      final list = await container.read(timersProvider.future);
+      expect(list.first.state, TimerState.paused);
+    });
+
     test('dismissed event for a timer deletes the row', () async {
-      // Pre-warm.
+      // Pre-warm and keep the provider alive so the event listener
+      // stays subscribed between pre-warm and event emission.
       await container.read(timersProvider.future);
+      container.listen(timersProvider, (_, __) {});
 
       final notifier = container.read(timersProvider.notifier);
-      final id = await notifier.create(label: 'x', durationSeconds: 600);
+      await notifier.create(label: 'x', durationSeconds: 600);
+      final id = (await container.read(timersProvider.future)).first.id!;
 
       // Simulate the native side firing and the user dismissing.
       fakeBridge.eventController.add(
@@ -221,10 +261,13 @@ void main() {
     test(
       'snoozed event for a timer keeps the row but refreshes state',
       () async {
-        // Pre-warm.
+        // Pre-warm and keep the provider alive.
         await container.read(timersProvider.future);
+        container.listen(timersProvider, (_, __) {});
+
         final notifier = container.read(timersProvider.notifier);
-        final id = await notifier.create(label: 'x', durationSeconds: 600);
+        await notifier.create(label: 'x', durationSeconds: 600);
+        final id = (await container.read(timersProvider.future)).first.id!;
         fakeBridge.eventController.add(
           AlarmEvent(alarmId: id, type: AlarmEventType.snoozed),
         );
@@ -241,13 +284,16 @@ void main() {
     );
 
     test('non-timer fired events do not delete the timer row', () async {
-      // Pre-warm.
+      // Pre-warm and keep the provider alive.
       await container.read(timersProvider.future);
+      container.listen(timersProvider, (_, __) {});
+
       // Defensive: if the native side ever sends a "time" triggerType
       // with a timerId-shaped int, the timers notifier should ignore
       // it (the alarms notifier owns those).
       final notifier = container.read(timersProvider.notifier);
-      final id = await notifier.create(label: 'x', durationSeconds: 600);
+      await notifier.create(label: 'x', durationSeconds: 600);
+      final id = (await container.read(timersProvider.future)).first.id!;
       fakeBridge.eventController.add(
         AlarmEvent(
           alarmId: id,
@@ -267,8 +313,8 @@ void main() {
 
     test('live remaining-seconds is populated for an active timer', () async {
       final notifier = container.read(timersProvider.notifier);
-      final id = await notifier.create(label: 'x', durationSeconds: 60);
-      expect(id, greaterThan(0));
+      final ok = await notifier.create(label: 'x', durationSeconds: 60);
+      expect(ok, isTrue);
       // The ticker is started during create(); it periodically
       // updates `_liveRemainingForActive`. We don't wait for a tick
       // here (the first tick is ~200ms away and the test would

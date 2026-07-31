@@ -115,6 +115,65 @@ void main() {
       expect(a, equals(b));
       expect(a, isNot(equals(c)));
     });
+
+    test('snoozeDurationMin defaults to defaultSnoozeDurationMin', () {
+      const record = TimerRecord(
+        label: 'Lunch',
+        durationSeconds: 1800,
+        remainingSeconds: 1800,
+        state: TimerState.running,
+      );
+      expect(record.snoozeDurationMin, TimerRecord.defaultSnoozeDurationMin);
+    });
+
+    test('toJson / fromJson round trip includes snoozeDurationMin', () {
+      const original = TimerRecord(
+        id: 7,
+        label: 'Workout',
+        durationSeconds: 1500,
+        remainingSeconds: 1500,
+        state: TimerState.paused,
+        startedAt: '2026-07-20T10:00:00Z',
+        snoozeDurationMin: 12,
+      );
+      final json = original.toJson();
+      expect(json['snooze_duration_min'], 12);
+
+      final restored = TimerRecord.fromJson(json);
+      expect(restored.snoozeDurationMin, 12);
+      expect(restored, equals(original));
+    });
+
+    test('fromJson falls back to default for legacy v1 rows', () {
+      // Pre-v2 timers table has no snooze_duration_min column.
+      // The fromJson path should still produce a usable record.
+      final legacy = <String, Object?>{
+        'id': 1,
+        'label': 'Legacy',
+        'duration_seconds': 60,
+        'remaining_seconds': 30,
+        'state': 'PAUSED',
+        'started_at': null,
+      };
+      final restored = TimerRecord.fromJson(legacy);
+      expect(restored.snoozeDurationMin, TimerRecord.defaultSnoozeDurationMin);
+    });
+
+    test('copyWith updates snoozeDurationMin without touching other fields', () {
+      const original = TimerRecord(
+        id: 1,
+        label: 'Lunch',
+        durationSeconds: 1800,
+        remainingSeconds: 1800,
+        state: TimerState.running,
+        startedAt: '2026-07-20T10:00:00Z',
+        snoozeDurationMin: 5,
+      );
+      final updated = original.copyWith(snoozeDurationMin: 15);
+      expect(updated.snoozeDurationMin, 15);
+      expect(updated.label, 'Lunch');
+      expect(updated.state, TimerState.running);
+    });
   });
 
   group('TimerState', () {

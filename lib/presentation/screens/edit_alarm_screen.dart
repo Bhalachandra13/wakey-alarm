@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:wakey_alarm/data/location_search_service.dart';
 import 'package:wakey_alarm/domain/alarm.dart';
 import 'package:wakey_alarm/domain/geofence_validator.dart';
 import 'package:wakey_alarm/presentation/providers/alarms_provider.dart';
@@ -30,6 +31,15 @@ class _EditAlarmScreenState extends ConsumerState<EditAlarmScreen> {
 
   bool _isPickingRingtone = false;
   bool _isPickingLocation = false;
+
+  // Address-search state for the location tab. The user types a
+  // place name, taps the search button, and picks one of the
+  // results to set [_latitude]/[_longitude] without having to
+  // drop a pin on the map.
+  final TextEditingController _locationSearchController = TextEditingController();
+  bool _isSearchingLocation = false;
+  List<LocationSearchResult> _locationSearchResults = const [];
+  String? _locationSearchError;
 
   final List<String> _weekdays = [
     'MON',
@@ -68,6 +78,7 @@ class _EditAlarmScreenState extends ConsumerState<EditAlarmScreen> {
   @override
   void dispose() {
     _labelController.dispose();
+    _locationSearchController.dispose();
     super.dispose();
   }
 
@@ -151,6 +162,69 @@ class _EditAlarmScreenState extends ConsumerState<EditAlarmScreen> {
     setState(() {
       _latitude = null;
       _longitude = null;
+      _resetLocationSearch();
+    });
+  }
+
+  /// Resets the address-search UI back to its empty state. Called
+  /// when the user clears the picked location (results no longer
+  /// match the alarm), or after a successful pick (the results are
+  /// the basis of the pick, so they can be dismissed).
+  void _resetLocationSearch() {
+    _locationSearchController.clear();
+    _locationSearchResults = const [];
+    _locationSearchError = null;
+    _isSearchingLocation = false;
+  }
+
+  /// Fires an address search via the [LocationSearchService] and
+  /// surfaces the results (or error) in the location card. Tied to
+  /// the search button + the keyboard "search" action so we don't
+  /// hammer the public Nominatim endpoint on every keystroke
+  /// (their usage policy caps us at 1 request/second).
+  Future<void> _runLocationSearch() async {
+    final query = _locationSearchController.text.trim();
+    if (query.isEmpty) {
+      setState(() {
+        _locationSearchResults = const [];
+        _locationSearchError = null;
+      });
+      return;
+    }
+    setState(() {
+      _isSearchingLocation = true;
+      _locationSearchError = null;
+    });
+    try {
+      final service = ref.read(locationSearchServiceProvider);
+      final results = await service.search(query);
+      if (!mounted) return;
+      setState(() {
+        _isSearchingLocation = false;
+        _locationSearchResults = results;
+        if (results.isEmpty) {
+          _locationSearchError = 'No matches for "$query"';
+        }
+      });
+    } on LocationSearchException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isSearchingLocation = false;
+        _locationSearchResults = const [];
+        _locationSearchError = e.message;
+      });
+    }
+  }
+
+  /// Adopts [result] as the picked location. Mirrors what the map
+  /// picker does on confirm: updates lat/lon and collapses the
+  /// search results so the user sees the new location in the
+  /// "Lat: ..., Lon: ..." display.
+  void _selectSearchResult(LocationSearchResult result) {
+    setState(() {
+      _latitude = result.latitude;
+      _longitude = result.longitude;
+      _resetLocationSearch();
     });
   }
 
@@ -207,10 +281,20 @@ class _EditAlarmScreenState extends ConsumerState<EditAlarmScreen> {
     }
 
     final notifier = ref.read(alarmsNotifierProvider.notifier);
-    if (widget.alarm == null) {
-      await notifier.insertAlarm(alarm);
-    } else {
-      await notifier.updateAlarm(alarm);
+    final scheduleOk = widget.alarm == null
+        ? (await notifier.insertAlarm(alarm)).scheduled
+        : await notifier.updateAlarm(alarm);
+
+    if (!scheduleOk && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Alarm saved, but it could not be scheduled. Grant the '
+            '"Alarms & reminders" permission, then toggle it off and on.',
+          ),
+          duration: Duration(seconds: 5),
+        ),
+      );
     }
 
     if (mounted) {
@@ -445,44 +529,41 @@ class _EditAlarmScreenState extends ConsumerState<EditAlarmScreen> {
                 ),
               ),
             ),
-            const SizedBox(height: 32),
-
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                    child: const Text('Cancel'),
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: _save,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: theme.colorScheme.primary,
-                      foregroundColor: theme.colorScheme.onPrimary,
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      elevation: 0,
-                    ),
-                    child: const Text('Save'),
-                  ),
-                ),
-              ],
-            ),
+            const SizedBox(height: 8),
           ],
         ),
       ),
+      persistentFooterButtons: _buildActionButtons(),
     );
+  }
+
+  List<Widget> _buildActionButtons() {
+    final theme = Theme.of(context);
+    return [
+      OutlinedButton(
+        onPressed: () => Navigator.of(context).pop(),
+        style: OutlinedButton.styleFrom(
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
+        child: const Text('Cancel'),
+      ),
+      ElevatedButton(
+        onPressed: _save,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: theme.colorScheme.primary,
+          foregroundColor: theme.colorScheme.onPrimary,
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          elevation: 0,
+        ),
+        child: const Text('Save'),
+      ),
+    ];
   }
 
   Widget _buildTimeSection(ThemeData theme) {
@@ -549,6 +630,8 @@ class _EditAlarmScreenState extends ConsumerState<EditAlarmScreen> {
 
   Widget _buildLocationSection(ThemeData theme) {
     final hasLocation = _latitude != null && _longitude != null;
+    final hasSearchResults = _locationSearchResults.isNotEmpty;
+    final hasSearchError = _locationSearchError != null;
     return Card(
       elevation: 0,
       color: theme.colorScheme.surfaceContainerLow,
@@ -573,6 +656,58 @@ class _EditAlarmScreenState extends ConsumerState<EditAlarmScreen> {
                 ),
               ],
             ),
+            const SizedBox(height: 12),
+            // Address search. Tapping the icon (or pressing the
+            // keyboard "search" key) calls into
+            // [LocationSearchService] — see [_runLocationSearch].
+            // Results render in their own card below so the user
+            // can still see the search field while scrolling
+            // through hits.
+            TextField(
+              key: const Key('locationSearchField'),
+              controller: _locationSearchController,
+              enabled: !_isSearchingLocation,
+              textInputAction: TextInputAction.search,
+              onSubmitted: (_) => _runLocationSearch(),
+              decoration: InputDecoration(
+                hintText: 'Search for a place',
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: IconButton(
+                  tooltip: 'Search',
+                  icon: _isSearchingLocation
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.arrow_forward),
+                  onPressed: _isSearchingLocation
+                      ? null
+                      : _runLocationSearch,
+                ),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
+                isDense: true,
+              ),
+            ),
+            if (hasSearchError && !_isSearchingLocation) ...[
+              const SizedBox(height: 8),
+              Text(
+                _locationSearchError!,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.error,
+                ),
+              ),
+            ],
+            if (hasSearchResults) ...[
+              const SizedBox(height: 12),
+              _buildLocationSearchResults(theme),
+            ],
             const SizedBox(height: 12),
             Row(
               children: [
@@ -615,6 +750,37 @@ class _EditAlarmScreenState extends ConsumerState<EditAlarmScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// Renders the address-search hits as a stacked list of
+  /// [ListTile]s. Kept separate from [_buildLocationSection] so
+  /// the section's column doesn't get unwieldy.
+  Widget _buildLocationSearchResults(ThemeData theme) {
+    return Card(
+      key: const Key('locationSearchResults'),
+      elevation: 0,
+      color: theme.colorScheme.surfaceContainerHighest,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Column(
+        children: [
+          for (var i = 0; i < _locationSearchResults.length; i++) ...[
+            if (i > 0)
+              const Divider(height: 1, indent: 16, endIndent: 16),
+            ListTile(
+              key: Key('locationSearchResult_$i'),
+              leading: const Icon(Icons.place_outlined),
+              title: Text(
+                _locationSearchResults[i].displayName,
+                style: theme.textTheme.bodyMedium,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              onTap: () => _selectSearchResult(_locationSearchResults[i]),
+            ),
+          ],
+        ],
       ),
     );
   }

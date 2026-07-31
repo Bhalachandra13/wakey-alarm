@@ -66,5 +66,41 @@ void main() {
       expect(event.toString(), contains('alarmId: 5'));
       expect(event.toString(), contains('dismissed'));
     });
+
+    test('coerces alarmId from a long (Int64) sent over the channel', () {
+      // The StandardMethodCodec can hand us back a `num` even when
+      // the Kotlin side put an `int`. We should not crash.
+      final event = AlarmEvent.fromMap(<String, Object?>{
+        'alarmId': 42.0, // double, simulates a coerced int
+        'type': 'fired',
+        'triggerType': 'time',
+      });
+      expect(event.alarmId, 42);
+    });
+
+    test('coerces alarmId from a numeric string', () {
+      final event = AlarmEvent.fromMap(<String, Object?>{
+        'alarmId': '17',
+        'type': 'fired',
+      });
+      expect(event.alarmId, 17);
+    });
+
+    test('throws a clear FormatException for a non-coercible alarmId', () {
+      expect(
+        () => AlarmEvent.fromMap(<String, Object?>{
+          'alarmId': 'not-a-number',
+          'type': 'fired',
+        }),
+        throwsFormatException,
+      );
+    });
+
+    test('throws a clear FormatException for a missing alarmId', () {
+      expect(
+        () => AlarmEvent.fromMap(<String, Object?>{'type': 'fired'}),
+        throwsFormatException,
+      );
+    });
   });
 }

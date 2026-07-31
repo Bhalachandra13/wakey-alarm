@@ -95,13 +95,17 @@ class GeofenceValidator {
     final phi2 = _toRadians(lat2);
     final dPhi = _toRadians(lat2 - lat1);
     final dLambda = _toRadians(lon2 - lon1);
+    final sinHalfPhi = math.sin(dPhi / 2);
+    final sinHalfLambda = math.sin(dLambda / 2);
     final a =
-        math.sin(dPhi / 2) * math.sin(dPhi / 2) +
-        math.cos(phi1) *
-            math.cos(phi2) *
-            math.sin(dLambda / 2) *
-            math.sin(dLambda / 2);
-    final c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+        sinHalfPhi * sinHalfPhi +
+        math.cos(phi1) * math.cos(phi2) * sinHalfLambda * sinHalfLambda;
+    // Clamp `a` to the valid range [0, 1]. Floating-point rounding can
+    // push it slightly outside (notably for antipodal points, where
+    // the true value is exactly 1), which would make `sqrt(1 - a)`
+    // return NaN. Clamping keeps the result finite and well-defined.
+    final clampedA = a < 0.0 ? 0.0 : (a > 1.0 ? 1.0 : a);
+    final c = 2 * math.atan2(math.sqrt(clampedA), math.sqrt(1 - clampedA));
     return earthRadiusMeters * c;
   }
 

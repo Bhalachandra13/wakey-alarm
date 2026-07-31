@@ -153,10 +153,13 @@ class Alarm {
       latitude: (json['latitude'] as num?)?.toDouble(),
       longitude: (json['longitude'] as num?)?.toDouble(),
       radiusMeters: json['radius_meters'] as int?,
-      isEnabled: (json['is_enabled'] as int?) != 0,
-      isArmed: (json['is_armed'] as int?) != 0,
+      // Use `== 1` rather than `!= 0` so a null column reads as
+      // `false` (defensive: the schema marks these NOT NULL, but
+      // a future migration or a hand-edited row could land here).
+      isEnabled: (json['is_enabled'] as int?) == 1,
+      isArmed: (json['is_armed'] as int?) == 1,
       soundUri: json['sound_uri'] as String,
-      vibrate: (json['vibrate'] as int?) != 0,
+      vibrate: (json['vibrate'] as int?) == 1,
       snoozeDurationMin: json['snooze_duration_min'] as int,
       maxSnoozeCount: json['max_snooze_count'] as int?,
       createdAt: json['created_at'] as String,

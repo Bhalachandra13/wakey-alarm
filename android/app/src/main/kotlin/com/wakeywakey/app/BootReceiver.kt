@@ -40,8 +40,28 @@ class BootReceiver : BroadcastReceiver() {
             return
         }
 
-        val count = AlarmScheduler.rescheduleAllPersisted(context)
-        Log.d(TAG, "BootReceiver: re-scheduled $count alarms after $intent.action")
+        // Countdown timers are transient by design: their fire time
+        // is `now + duration`, and after a reboot that moment is
+        // either already in the past (so the timer should not fire)
+        // or no longer meaningful (the user would have expected the
+        // app to be running to show the countdown). Persisted timer
+        // metadata is still kept while the app is alive so that
+        // snooze/dismiss work, but we must NOT re-schedule them via
+        // AlarmManager on boot — doing so would fire them at
+        // 00:00/timeHour=0,minute=0 instead of the original countdown.
+        val all = AlarmScheduler.readAllPersisted(context)
+        val timeOnly = all.filter { it.triggerType == "TIME" }
+        var ok = 0
+        for (data in timeOnly) {
+            val fresh = data.copy(currentSnoozeCount = 0)
+            val triggerAtMillis = NextAlarmTime.compute(
+                fresh.timeHour,
+                fresh.timeMinute,
+                fresh.repeatDays,
+            )
+            if (AlarmScheduler.schedule(context, fresh, triggerAtMillis)) ok++
+        }
+        Log.d(TAG, "BootReceiver: re-scheduled $ok/${timeOnly.size} time alarms after $intent.action")
     }
 
     companion object {

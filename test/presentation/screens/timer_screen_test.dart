@@ -6,7 +6,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:wakey_alarm/data/wakey_database.dart';
 import 'package:wakey_alarm/native_bridge/alarm_bridge.dart';
+import 'package:wakey_alarm/native_bridge/permission_bridge.dart';
 import 'package:wakey_alarm/presentation/providers/alarms_provider.dart';
+import 'package:wakey_alarm/domain/timer_record.dart';
 import 'package:wakey_alarm/presentation/providers/timers_provider.dart';
 import 'package:wakey_alarm/presentation/screens/timer_screen.dart';
 
@@ -14,6 +16,7 @@ class _FakeAlarmBridge implements AlarmBridge {
   _FakeAlarmBridge()
     : eventController = StreamController<AlarmEvent>.broadcast();
   final StreamController<AlarmEvent> eventController;
+  bool scheduleTimerSuccess = true;
   @override
   Stream<AlarmEvent>? eventStream;
   @override
@@ -21,11 +24,54 @@ class _FakeAlarmBridge implements AlarmBridge {
   @override
   Future<bool> scheduleAlarm(Map<String, Object?> payload) async => true;
   @override
-  Future<bool> scheduleTimer(Map<String, Object?> payload) async => true;
+  Future<bool> scheduleTimer(Map<String, Object?> payload) async =>
+      scheduleTimerSuccess;
   @override
   Future<bool> cancelAlarm(int alarmId) async => true;
   @override
   Future<String?> pickRingtone({String? currentUri}) async => null;
+}
+
+class _FakePermissionBridge implements PermissionBridge {
+  _FakePermissionBridge({this.canSchedule = true});
+
+  bool canSchedule;
+
+  void dispose() {}
+
+  @override
+  Future<bool> canScheduleExactAlarms() async => canSchedule;
+
+  @override
+  Future<bool> requestExactAlarmPermission() async {
+    canSchedule = true;
+    return true;
+  }
+
+  @override
+  Future<NativePermissionStatus> getNotificationPermissionStatus() async =>
+      NativePermissionStatus.granted;
+
+  @override
+  Future<NativePermissionStatus> requestNotificationPermission() async =>
+      NativePermissionStatus.granted;
+}
+
+class _FakeTimersNotifier extends TimersNotifier {
+  bool createShouldSucceed = true;
+
+  @override
+  Future<List<TimerRecord>> build() async => const [];
+
+  @override
+  Future<bool> create({
+    required String label,
+    required int durationSeconds,
+    String soundUri = '',
+    bool vibrate = true,
+    int snoozeDurationMin = 5,
+    int? maxSnoozeCount,
+  }) async => createShouldSucceed;
 }
 
 void main() {
@@ -55,6 +101,7 @@ void main() {
       overrides: [
         databaseProvider.overrideWithValue(database),
         alarmBridgeProvider.overrideWithValue(fakeBridge),
+        permissionBridgeProvider.overrideWithValue(_FakePermissionBridge()),
         alarmEventsProvider.overrideWith(
           (ref) => fakeBridge.eventController.stream,
         ),
@@ -92,6 +139,7 @@ void main() {
         overrides: [
           databaseProvider.overrideWithValue(database),
           alarmBridgeProvider.overrideWithValue(fakeBridge),
+          permissionBridgeProvider.overrideWithValue(_FakePermissionBridge()),
           alarmEventsProvider.overrideWith(
             (ref) => fakeBridge.eventController.stream,
           ),
@@ -149,6 +197,75 @@ void main() {
       // Default duration 0/5/0 (zero-padded to two digits each).
       expect(find.text('00'), findsNWidgets(2)); // hours + seconds
       expect(find.text('05'), findsOneWidget); // minutes
+    });
+
+    testWidgets('shows exact-alarm permission banner when denied', (
+      tester,
+    ) async {
+      final permissionBridge = _FakePermissionBridge(canSchedule: false);
+      addTearDown(permissionBridge.dispose);
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(database),
+            alarmBridgeProvider.overrideWithValue(fakeBridge),
+            permissionBridgeProvider.overrideWithValue(permissionBridge),
+            alarmEventsProvider.overrideWith(
+              (ref) => fakeBridge.eventController.stream,
+            ),
+          ],
+          child: const MaterialApp(home: Scaffold(body: TimerScreen())),
+        ),
+      );
+      await pumpUntilData(tester);
+
+      for (var i = 0; i < 30; i++) {
+        await tester.pump(const Duration(milliseconds: 20));
+        if (find.textContaining('exact alarm').evaluate().isNotEmpty) break;
+      }
+      expect(
+        find.textContaining('exact alarm'),
+        findsOneWidget,
+        reason: 'Timer tab should show the exact-alarm permission banner',
+      );
+    });
+
+    testWidgets('shows error snackbar when timer schedule is rejected', (
+      tester,
+    ) async {
+      final fakeNotifier = _FakeTimersNotifier()..createShouldSucceed = false;
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            timersProvider.overrideWith(() => fakeNotifier),
+            permissionBridgeProvider.overrideWithValue(
+              _FakePermissionBridge(),
+            ),
+          ],
+          child: const MaterialApp(home: Scaffold(body: TimerScreen())),
+        ),
+      );
+      await pumpUntilData(tester);
+
+      await tester.tap(find.byIcon(Icons.add));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Start'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(
+        find.textContaining('Could not start the timer'),
+        findsOneWidget,
+        reason: 'User should be told why the timer could not start',
+      );
+      expect(
+        find.textContaining('Alarms & reminders'),
+        findsOneWidget,
+        reason: 'Snackbar should name the exact permission to grant',
+      );
+      // The create screen should still be open so the user can retry.
+      expect(find.text('Add Timer'), findsOneWidget);
     });
   });
 }

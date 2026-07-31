@@ -36,18 +36,37 @@ class TimersNotifier extends AsyncNotifier<List<TimerRecord>> {
     // ringing UI; we mirror its outcomes into the timers list, same
     // way AlarmsNotifier does. See the comment there for the
     // "native is source of truth" rationale.
-    ref.listen<AsyncValue<AlarmEvent>>(alarmEventsProvider, (prev, next) {
+    ref.listen<AsyncValue<AlarmEvent>>(alarmEventsProvider, (prev, next) async {
       final event = next.value;
       if (event == null) return;
-      // Only act on timer-fired events; let the alarms notifier
-      // handle alarm-fired events.
-      if (event.triggerType != 'timer') return;
+      // `fired` events include a triggerType, but `snoozed` and
+      // `dismissed` events from RingingActivity do not (the alarm
+      // has finished ringing, so the trigger type is no longer
+      // relevant). We therefore route fired events only when they
+      // are explicitly for a timer. For snoozed/dismissed events
+      // we honor an explicit non-timer triggerType if present
+      // (defensive), otherwise we look the alarmId up in the timers
+      // table and only act when there is a matching timer row.
+      final isTimerFire =
+          event.type == AlarmEventType.fired && event.triggerType == 'timer';
+      if (!isTimerFire) {
+        if (event.triggerType != null && event.triggerType != 'timer') {
+          return;
+        }
+        final dao = ref.read(timerDaoProvider);
+        final timer = await dao.read(event.alarmId);
+        if (timer == null) return;
+      }
       switch (event.type) {
         case AlarmEventType.fired:
-          // RingingActivity already shows the timer UI. Nothing to
-          // do here for the DB — the next dismiss/snooze event
-          // will update the row.
-          break;
+          // RingingActivity already shows the timer UI. Stop the
+          // live ticker so the UI doesn't keep counting past 0
+          // while the ringing UI is up. The native side is now the
+          // source of truth for when the next fire will be (snooze
+          // or natural completion). The next dismiss/snooze event
+          // will update or remove the row.
+          if (_lastTickedTimerId == event.alarmId) _stopTicker();
+          ref.invalidateSelf();
         case AlarmEventType.snoozed:
           // The native side re-scheduled a follow-up fire. The DB
           // row stays as RUNNING; the next fired event will fire
@@ -55,10 +74,11 @@ class TimersNotifier extends AsyncNotifier<List<TimerRecord>> {
           // because the DB is just a record of "we have an active
           // timer" — the live countdown is now driven by the
           // native schedule.
+          if (_lastTickedTimerId == event.alarmId) _stopTicker();
           ref.invalidateSelf();
         case AlarmEventType.dismissed:
           // The user dismissed; delete the DB row.
-          _onTimerDismissed(event.alarmId);
+          await _onTimerDismissed(event.alarmId);
       }
     });
     ref.onDispose(_stopTicker);
@@ -72,14 +92,18 @@ class TimersNotifier extends AsyncNotifier<List<TimerRecord>> {
 
   /// Create a timer and schedule it with the native AlarmManager.
   ///
-  /// Returns the inserted DB id. The timer is immediately
-  /// RUNNING — there is no "draft" state.
-  Future<int> create({
+  /// Returns `true` if the timer was inserted **and** the native
+  /// schedule succeeded. Returns `false` if the native side refused
+  /// the schedule (typically because `SCHEDULE_EXACT_ALARM` is not
+  /// granted on Android 12+). In the failure case the just-inserted
+  /// timer row is rolled back, so the caller can surface the error
+  /// and let the user retry after granting the permission.
+  Future<bool> create({
     required String label,
     required int durationSeconds,
     String soundUri = '',
     bool vibrate = true,
-    int snoozeDurationMin = 5,
+    int snoozeDurationMin = TimerRecord.defaultSnoozeDurationMin,
     int? maxSnoozeCount,
   }) async {
     if (durationSeconds <= 0) {
@@ -93,6 +117,7 @@ class TimersNotifier extends AsyncNotifier<List<TimerRecord>> {
       remainingSeconds: durationSeconds,
       state: TimerState.running,
       startedAt: now.toIso8601String(),
+      snoozeDurationMin: snoozeDurationMin,
     );
     final dao = ref.read(timerDaoProvider);
     final id = await dao.insert(record);
@@ -107,15 +132,16 @@ class TimersNotifier extends AsyncNotifier<List<TimerRecord>> {
       'maxSnoozeCount': maxSnoozeCount ?? -1,
     });
     if (!scheduled) {
-      // Best-effort cleanup: delete the DB row since the native
-      // schedule did not take. Otherwise the user would see a
-      // running timer that never fires — the worst kind of
-      // silent-fail.
+      // Roll back the DB row so the user isn't left with a timer
+      // that can never fire. The UI will show an error pointing at
+      // the exact-alarm permission banner.
       await dao.delete(id);
+      ref.invalidateSelf();
+      return false;
     }
     _startTickerFor(id);
     ref.invalidateSelf();
-    return id;
+    return true;
   }
 
   /// Cancel a timer. Removes the row and the native schedule.
@@ -147,34 +173,45 @@ class TimersNotifier extends AsyncNotifier<List<TimerRecord>> {
 
   /// Resume a paused timer. Schedules a new fire at
   /// `now + remainingSeconds` and flips state back to RUNNING.
-  Future<void> resume(int id) async {
+  ///
+  /// Returns `true` if the timer is running again and the native
+  /// schedule succeeded. Returns `false` if the native schedule
+  /// failed (e.g. `SCHEDULE_EXACT_ALARM` was revoked); the timer
+  /// stays paused in that case so the user can retry later.
+  Future<bool> resume(int id) async {
     final dao = ref.read(timerDaoProvider);
     final current = await dao.read(id);
-    if (current == null || current.state != TimerState.paused) return;
+    if (current == null || current.state != TimerState.paused) return true;
     final remaining = current.remainingSeconds;
     if (remaining <= 0) {
       // Shouldn't happen for a paused timer (we never persist
       // remaining=0 for a non-COMPLETED state), but defensive.
       await dao.delete(id);
       ref.invalidateSelf();
-      return;
+      return true;
     }
     final now = clock.now();
     final fireAt = now.add(Duration(seconds: remaining));
+    final bridge = ref.read(alarmBridgeProvider);
+    final scheduled = await bridge.scheduleTimer({
+      'alarmId': id,
+      'triggerAtMillis': fireAt.millisecondsSinceEpoch,
+      'label': current.label,
+      'snoozeDurationMin': current.snoozeDurationMin,
+    });
+    if (!scheduled) {
+      // Leave the timer paused. The UI will surface the permission
+      // error; the user can retry after granting it.
+      return false;
+    }
     final resumed = current.copyWith(
       state: TimerState.running,
       startedAt: now.toIso8601String(),
     );
     await dao.update(resumed);
-    final bridge = ref.read(alarmBridgeProvider);
-    await bridge.scheduleTimer({
-      'alarmId': id,
-      'triggerAtMillis': fireAt.millisecondsSinceEpoch,
-      'label': resumed.label,
-      'snoozeDurationMin': resumed.snoozeDurationMinOrDefault,
-    });
     _startTickerFor(id);
     ref.invalidateSelf();
+    return true;
   }
 
   /// The live remaining-seconds for the currently-ticking timer.
@@ -217,8 +254,23 @@ class TimersNotifier extends AsyncNotifier<List<TimerRecord>> {
   Future<void> _tick() async {
     final id = _lastTickedTimerId;
     if (id == null) return;
+    // The ticker is a real `Timer.periodic` and may fire after the
+    // notifier has been disposed (e.g. the test container is torn
+    // down, or the app process is shutting down). Guard against
+    // using a disposed `ref` to avoid an exception that would
+    // otherwise surface as a teardown error or a crash.
+    if (!ref.mounted) {
+      _stopTicker();
+      return;
+    }
     final dao = ref.read(timerDaoProvider);
     final record = await dao.read(id);
+    // The `await` above is an async gap; the notifier may have been
+    // disposed while we were reading from the DB. Re-check.
+    if (!ref.mounted) {
+      _stopTicker();
+      return;
+    }
     if (record == null || record.state != TimerState.running) {
       _stopTicker();
       ref.invalidateSelf();
@@ -233,7 +285,16 @@ class TimersNotifier extends AsyncNotifier<List<TimerRecord>> {
     }
     final start = DateTime.parse(startedAt);
     final elapsed = now.difference(start).inSeconds;
-    final newRemaining = (record.durationSeconds - elapsed).clamp(0, 1 << 30);
+    // Use the *remaining* time at the start of the current run as the
+    // base, not the original full `durationSeconds`. This matters
+    // after a pause/resume cycle: the DB still has the original
+    // `durationSeconds`, but the timer should keep counting down from
+    // the frozen `remainingSeconds` value, not reset to the full
+    // duration. The upper bound is also `remainingSeconds` so that
+    // negative elapsed (e.g. clock skew right after resume) cannot
+    // bump the remaining above the value it had at resume.
+    final newRemaining =
+        (record.remainingSeconds - elapsed).clamp(0, record.remainingSeconds);
     _liveRemainingForActive = newRemaining;
     // Persist at most once a second to keep DB IO light.
     if (_lastTickedAt == null ||
@@ -257,11 +318,3 @@ final liveTimerRemainingProvider = Provider<int?>((ref) {
 final timersProvider = AsyncNotifierProvider<TimersNotifier, List<TimerRecord>>(
   TimersNotifier.new,
 );
-
-/// Helper extension to give timers a sane snooze default. The AlarmData
-/// pipeline requires an int; we hard-code 5 minutes as a sensible
-/// default for timer snoozes (shorter than typical alarm snoozes
-/// because timer fires are usually more intentional).
-extension on TimerRecord {
-  int get snoozeDurationMinOrDefault => 5;
-}
