@@ -48,6 +48,29 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+            // R8 full mode strips unused Java/Kotlin classes and obfuscates
+            // the rest. Combined with resource shrinking this typically
+            // halves the APK and noticeably speeds up dexing/linking
+            // because there's less code to process.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+        }
+    }
+
+    // Per-ABI splits: ship one lean APK per architecture (arm64-v8a is
+    // ~99% of modern devices, armeabi-v7a is older, x86_64 is for
+    // emulators/ChomeOS). universalApk=true still produces a fat
+    // single-APK fallback for sideloaders who don't know their ABI.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("armeabi-v7a", "arm64-v8a", "x86_64")
+            isUniversalApk = true
         }
     }
 }
