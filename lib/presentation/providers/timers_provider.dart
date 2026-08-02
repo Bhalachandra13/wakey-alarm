@@ -15,20 +15,56 @@ final timerDaoProvider = Provider<TimerDao>((ref) {
 /// Owns the list of active [TimerRecord]s and brokers scheduling to
 /// the native AlarmManager.
 ///
-/// The notifier holds an additional **live remaining-time** field
-/// ([liveRemainingSeconds]) that is computed from [clock] on each
-/// tick, not from the DB. The DB is only the source of truth for the
-/// *next* time the user opens the app — the live UI is fed by the
-/// ticker so it updates smoothly without hitting sqflite.
+/// The notifier holds an additional **live remaining-time** map
+/// ([_liveRemainingById]) keyed by timer id. The values are
+/// computed from [clock] on each tick, not from the DB. While a
+/// timer is RUNNING its DB row is *never* rewritten — the row's
+/// `remaining_seconds` stays at the value captured when the current
+/// run started (at create/resume), so the live countdown is a pure
+/// function of the row: `remaining_seconds - (now - started_at)`.
+/// That makes cold starts correct for free: [build] re-seeds the
+/// in-memory base from the same two columns and the countdown
+/// resumes from the right value with no DB writes in between.
+///
+/// The tick publishes updates by bumping [timerTickProvider] — a
+/// lightweight counter — instead of invalidating this provider.
+/// Invalidating 5x/second used to re-query sqflite on every tick
+/// and put the whole list through reload transitions; the counter
+/// rebuilds only the widgets that show a countdown.
+///
+/// Multiple timers can be active at once, so the live map is keyed
+/// by id rather than a single scalar; this lets every timer card
+/// (and the detail screen) show a per-timer countdown that ticks
+/// down second by second without each card running its own ticker.
 class TimersNotifier extends AsyncNotifier<List<TimerRecord>> {
   Timer? _ticker;
-  int? _lastTickedTimerId;
-  DateTime? _lastTickedAt;
+  final Set<int> _trackedTimerIds = <int>{};
 
-  /// Latest computed remaining seconds for the currently-active
-  /// timer, or null if no timer is active. Mirrors the DB value for
-  /// pause; for running it counts down each tick.
-  int? _liveRemainingForActive;
+  /// Latest computed remaining seconds for each running timer,
+  /// keyed by timer id. Paused timers are not in this map (their
+  /// remaining is fixed and read straight from the DB). Removed
+  /// when a timer is cancelled / dismissed / fired.
+  final Map<int, int> _liveRemainingById = <int, int>{};
+
+  /// Per-timer countdown base: the remaining seconds at the moment
+  /// the current run started, and that start timestamp. Seeded at
+  /// create / resume / cold-start load and kept in sync with the DB
+  /// row's `remaining_seconds` + `started_at` (which are immutable
+  /// while RUNNING). The tick computes
+  /// `base - (now - runStartedAt)` — subtracting elapsed from the
+  /// *persisted live value* is a bug (the base itself shrinks every
+  /// second, so the countdown double-counts and races to zero).
+  final Map<int, int> _baseRemainingById = <int, int>{};
+  final Map<int, DateTime> _runStartedAtById = <int, DateTime>{};
+
+  /// Ids whose countdown is currently owned by the native
+  /// ringing/snooze flow (a `fired` or `snoozed` event arrived but
+  /// the row still exists). [_reseedTracking] must not re-track
+  /// these: the Dart countdown for them stops at 0 until the row
+  /// is dismissed or deleted. Session-scoped on purpose — a cold
+  /// start finds an empty set, so a timer that fired while the app
+  /// was dead still gets seeded (and clamps to 0).
+  final Set<int> _nativeOwnedTimerIds = <int>{};
 
   @override
   Future<List<TimerRecord>> build() async {
@@ -60,13 +96,13 @@ class TimersNotifier extends AsyncNotifier<List<TimerRecord>> {
       switch (event.type) {
         case AlarmEventType.fired:
           // RingingActivity already shows the timer UI. Stop the
-          // live ticker so the UI doesn't keep counting past 0
-          // while the ringing UI is up. The native side is now the
-          // source of truth for when the next fire will be (snooze
-          // or natural completion). The next dismiss/snooze event
-          // will update or remove the row.
-          if (_lastTickedTimerId == event.alarmId) _stopTicker();
-          ref.invalidateSelf();
+          // live ticker for this timer so the UI doesn't keep
+          // counting past 0 while the ringing UI is up. The
+          // native side is now the source of truth for when the
+          // next fire will be (snooze or natural completion).
+          // The next dismiss/snooze event will update or remove
+          // the row.
+          await _deferToNative(event.alarmId);
         case AlarmEventType.snoozed:
           // The native side re-scheduled a follow-up fire. The DB
           // row stays as RUNNING; the next fired event will fire
@@ -74,15 +110,55 @@ class TimersNotifier extends AsyncNotifier<List<TimerRecord>> {
           // because the DB is just a record of "we have an active
           // timer" — the live countdown is now driven by the
           // native schedule.
-          if (_lastTickedTimerId == event.alarmId) _stopTicker();
-          ref.invalidateSelf();
+          await _deferToNative(event.alarmId);
         case AlarmEventType.dismissed:
           // The user dismissed; delete the DB row.
           await _onTimerDismissed(event.alarmId);
       }
     });
     ref.onDispose(_stopTicker);
-    return _loadActive();
+    final timers = await _loadActive();
+    _reseedTracking(timers);
+    return timers;
+  }
+
+  /// Reconciles the live-tracking state with the freshly loaded
+  /// list. This is what makes the countdown work after a cold
+  /// start (or any rebuild): RUNNING rows loaded from the DB get
+  /// their countdown base seeded and the ticker started, while ids
+  /// that are no longer RUNNING (paused / cancelled / fired
+  /// elsewhere) are dropped. Without this the ticker only ever ran
+  /// for timers created or resumed in *this* session, so a timer
+  /// that outlived the process showed a frozen persisted value.
+  void _reseedTracking(List<TimerRecord> timers) {
+    final runningIds = <int>{
+      for (final t in timers)
+        if (t.state == TimerState.running && t.id != null) t.id!,
+    };
+    for (final id in _trackedTimerIds.toList()) {
+      if (!runningIds.contains(id)) _untrackTimer(id);
+    }
+    for (final t in timers) {
+      if (t.state != TimerState.running || t.id == null) continue;
+      // Owned by the native ringing/snooze flow — leave its
+      // countdown stopped at the zeroed row value.
+      if (_nativeOwnedTimerIds.contains(t.id)) continue;
+      final startedAt = t.startedAt;
+      if (startedAt == null) {
+        // A running row without a start timestamp can't be
+        // counted down (there is no elapsed baseline). Expose the
+        // persisted value as a static live value so the UI still
+        // shows it, but don't tick it.
+        _liveRemainingById[t.id!] = t.remainingSeconds;
+        continue;
+      }
+      _trackTimer(
+        t.id!,
+        baseRemaining: t.remainingSeconds,
+        runStartedAt: DateTime.parse(startedAt),
+      );
+    }
+    _ensureTickerRunning();
   }
 
   Future<List<TimerRecord>> _loadActive() async {
@@ -139,7 +215,8 @@ class TimersNotifier extends AsyncNotifier<List<TimerRecord>> {
       ref.invalidateSelf();
       return false;
     }
-    _startTickerFor(id);
+    _trackTimer(id, baseRemaining: durationSeconds, runStartedAt: now);
+    _ensureTickerRunning();
     ref.invalidateSelf();
     return true;
   }
@@ -150,7 +227,8 @@ class TimersNotifier extends AsyncNotifier<List<TimerRecord>> {
     final bridge = ref.read(alarmBridgeProvider);
     await bridge.cancelAlarm(id);
     await dao.delete(id);
-    if (_lastTickedTimerId == id) _stopTicker();
+    _nativeOwnedTimerIds.remove(id);
+    _untrackTimer(id);
     ref.invalidateSelf();
   }
 
@@ -162,12 +240,31 @@ class TimersNotifier extends AsyncNotifier<List<TimerRecord>> {
     if (current == null || current.state != TimerState.running) return;
     final bridge = ref.read(alarmBridgeProvider);
     await bridge.cancelAlarm(id);
+    // Prefer the ticker's latest value; if the first tick hasn't
+    // fired yet (pause within ~200ms of start/resume), derive the
+    // frozen value from the seeded base — same formula the tick
+    // uses — and only then fall back to the raw persisted value.
+    final live = _liveRemainingById[id];
+    final base = _baseRemainingById[id];
+    final runStartedAt = _runStartedAtById[id];
+    final int frozenRemaining;
+    if (live != null) {
+      frozenRemaining = live;
+    } else if (base != null && runStartedAt != null) {
+      final elapsed = clock.now().difference(runStartedAt).inSeconds;
+      frozenRemaining = (base - elapsed).clamp(0, base);
+    } else {
+      frozenRemaining = current.remainingSeconds;
+    }
     final frozen = current.copyWith(
       state: TimerState.paused,
-      remainingSeconds: _liveRemainingForActive ?? current.remainingSeconds,
+      remainingSeconds: frozenRemaining,
     );
     await dao.update(frozen);
-    if (_lastTickedTimerId == id) _stopTicker();
+    // Paused timers don't need a live count; freeze the value and
+    // drop the id from the live map. If no other timers are
+    // running the ticker can stop entirely.
+    _untrackTimer(id);
     ref.invalidateSelf();
   }
 
@@ -209,23 +306,51 @@ class TimersNotifier extends AsyncNotifier<List<TimerRecord>> {
       startedAt: now.toIso8601String(),
     );
     await dao.update(resumed);
-    _startTickerFor(id);
+    _trackTimer(id, baseRemaining: remaining, runStartedAt: now);
+    _ensureTickerRunning();
     ref.invalidateSelf();
     return true;
   }
 
-  /// The live remaining-seconds for the currently-ticking timer.
-  /// `null` when no timer is active.
-  int? get liveRemainingForActive => _liveRemainingForActive;
+  /// The live remaining-seconds for the timer with [id], or `null`
+  /// if no live value has been computed yet (the first tick hasn't
+  /// fired) or if the timer is paused/cancelled. While a timer is
+  /// RUNNING, the value decreases each tick.
+  int? liveRemainingFor(int id) => _liveRemainingById[id];
+
+  /// Convenience: live remaining for the first tracked (running)
+  /// timer, or null. Kept for callers that only need *any* active
+  /// timer's countdown (e.g. legacy single-timer UI elements).
+  int? get liveRemainingForActive {
+    if (_liveRemainingById.isEmpty) return null;
+    return _liveRemainingById.values.first;
+  }
 
   // -------------------------------------------------------------------------
   // Native mirror
   // -------------------------------------------------------------------------
 
+  /// Hands a timer's countdown over to the native ringing/snooze
+  /// flow: stops tracking it, pins its persisted remaining at 0
+  /// (so the list/detail fallback shows 00:00 rather than the
+  /// run's base value while the row lives on), and marks it so
+  /// [_reseedTracking] doesn't resurrect the countdown on the
+  /// rebuild that follows.
+  Future<void> _deferToNative(int timerId) async {
+    final wasTracked = _trackedTimerIds.contains(timerId);
+    _untrackTimer(timerId);
+    if (wasTracked) _nativeOwnedTimerIds.add(timerId);
+    final dao = ref.read(timerDaoProvider);
+    await dao.updateRemaining(timerId, 0);
+    if (!ref.mounted) return;
+    ref.invalidateSelf();
+  }
+
   Future<void> _onTimerDismissed(int timerId) async {
     final dao = ref.read(timerDaoProvider);
     await dao.delete(timerId);
-    if (_lastTickedTimerId == timerId) _stopTicker();
+    _nativeOwnedTimerIds.remove(timerId);
+    _untrackTimer(timerId);
     ref.invalidateSelf();
   }
 
@@ -233,27 +358,65 @@ class TimersNotifier extends AsyncNotifier<List<TimerRecord>> {
   // Live ticker
   // -------------------------------------------------------------------------
 
-  void _startTickerFor(int id) {
-    _stopTicker();
-    _lastTickedTimerId = id;
-    _lastTickedAt = clock.now();
-    _liveRemainingForActive = null;
-    _ticker = Timer.periodic(const Duration(milliseconds: 200), (_) async {
-      await _tick();
+  /// Adds [id] to the set of timers whose remaining time should be
+  /// tracked in [_liveRemainingById], capturing the countdown base
+  /// ([baseRemaining] seconds remaining as of [runStartedAt]). If
+  /// the ticker is not yet running, [_ensureTickerRunning] starts
+  /// it.
+  void _trackTimer(
+    int id, {
+    required int baseRemaining,
+    required DateTime runStartedAt,
+  }) {
+    _trackedTimerIds.add(id);
+    _baseRemainingById[id] = baseRemaining;
+    _runStartedAtById[id] = runStartedAt;
+    // Explicit (re)starts always take the countdown back from the
+    // native flow — ids can be recycled by sqlite after a delete.
+    _nativeOwnedTimerIds.remove(id);
+  }
+
+  /// Removes [id] from the tracked set. Stops the ticker entirely
+  /// if the tracked set becomes empty — there's nothing left to
+  /// count down.
+  void _untrackTimer(int id) {
+    _trackedTimerIds.remove(id);
+    _liveRemainingById.remove(id);
+    _baseRemainingById.remove(id);
+    _runStartedAtById.remove(id);
+    if (_trackedTimerIds.isEmpty) _stopTicker();
+  }
+
+  /// Starts the periodic ticker if it isn't already running. The
+  /// ticker is a single `Timer.periodic` that walks every tracked
+  /// timer; this is cheaper than spinning up one timer per running
+  /// timer and keeps the in-process state in one place.
+  void _ensureTickerRunning() {
+    if (_ticker != null) return;
+    if (_trackedTimerIds.isEmpty) return;
+    // 200 ms cadence: the displayed value has 1-second granularity,
+    // so a sub-second tick just aligns the visible flip to the real
+    // second boundary (max 200 ms late) without busy-waking.
+    _ticker = Timer.periodic(const Duration(milliseconds: 200), (_) {
+      _tick();
     });
   }
 
   void _stopTicker() {
     _ticker?.cancel();
     _ticker = null;
-    _lastTickedTimerId = null;
-    _lastTickedAt = null;
-    _liveRemainingForActive = null;
+    _liveRemainingById.clear();
+    _trackedTimerIds.clear();
+    _baseRemainingById.clear();
+    _runStartedAtById.clear();
+    // NB: `_nativeOwnedTimerIds` is deliberately NOT cleared here.
+    // It is session state, not ticker state — it must survive the
+    // ticker stopping (e.g. the last tracked timer firing while a
+    // deferred one is still waiting for its dismiss event).
   }
 
-  Future<void> _tick() async {
-    final id = _lastTickedTimerId;
-    if (id == null) return;
+  void _tick() {
+    if (_trackedTimerIds.isEmpty) return;
     // The ticker is a real `Timer.periodic` and may fire after the
     // notifier has been disposed (e.g. the test container is torn
     // down, or the app process is shutting down). Guard against
@@ -263,53 +426,78 @@ class TimersNotifier extends AsyncNotifier<List<TimerRecord>> {
       _stopTicker();
       return;
     }
-    final dao = ref.read(timerDaoProvider);
-    final record = await dao.read(id);
-    // The `await` above is an async gap; the notifier may have been
-    // disposed while we were reading from the DB. Re-check.
-    if (!ref.mounted) {
-      _stopTicker();
-      return;
-    }
-    if (record == null || record.state != TimerState.running) {
-      _stopTicker();
-      ref.invalidateSelf();
-      return;
-    }
     final now = clock.now();
-    final startedAt = record.startedAt;
-    if (startedAt == null) {
-      _liveRemainingForActive = record.remainingSeconds;
-      ref.invalidateSelf();
-      return;
+    var changed = false;
+    // Pure in-memory recompute — no DB reads here. The base maps
+    // are seeded from the DB at create/resume/build time, and the
+    // list reload (triggered by any state change) reconciles
+    // membership via [_reseedTracking], so a tick never needs to
+    // touch sqflite.
+    for (final id in _trackedTimerIds) {
+      final base = _baseRemainingById[id];
+      final runStartedAt = _runStartedAtById[id];
+      if (base == null || runStartedAt == null) continue;
+      final elapsed = now.difference(runStartedAt).inSeconds;
+      // Clamp both ends: elapsed can be negative right after a
+      // resume (clock skew) and can overshoot the base when the
+      // process was suspended past the fire time — the native
+      // alarm owns actual firing, the display just pins at 0.
+      final newRemaining = (base - elapsed).clamp(0, base);
+      if (_liveRemainingById[id] != newRemaining) {
+        _liveRemainingById[id] = newRemaining;
+        changed = true;
+      }
     }
-    final start = DateTime.parse(startedAt);
-    final elapsed = now.difference(start).inSeconds;
-    // Use the *remaining* time at the start of the current run as the
-    // base, not the original full `durationSeconds`. This matters
-    // after a pause/resume cycle: the DB still has the original
-    // `durationSeconds`, but the timer should keep counting down from
-    // the frozen `remainingSeconds` value, not reset to the full
-    // duration. The upper bound is also `remainingSeconds` so that
-    // negative elapsed (e.g. clock skew right after resume) cannot
-    // bump the remaining above the value it had at resume.
-    final newRemaining =
-        (record.remainingSeconds - elapsed).clamp(0, record.remainingSeconds);
-    _liveRemainingForActive = newRemaining;
-    // Persist at most once a second to keep DB IO light.
-    if (_lastTickedAt == null ||
-        now.difference(_lastTickedAt!) >= const Duration(seconds: 1)) {
-      _lastTickedAt = now;
-      await dao.updateRemaining(id, newRemaining);
+    // Only notify when a displayed second actually flipped, so the
+    // UI rebuilds once per second rather than five times.
+    if (changed && ref.mounted) {
+      ref.read(timerTickProvider.notifier).bump();
     }
-    // Notify listeners so the UI can re-render.
-    ref.invalidateSelf();
   }
 }
 
-/// Convenience provider exposing the live remaining-seconds to widgets.
+/// A monotonically increasing counter bumped by [TimersNotifier]
+/// each time a tracked timer's remaining-seconds value flips.
+/// Watching this (instead of [timersProvider]) is what lets the
+/// countdown UI re-render every second without re-querying the
+/// database or re-running the async notifier's build on every tick.
+final timerTickProvider = NotifierProvider<TimerTickNotifier, int>(
+  TimerTickNotifier.new,
+);
+
+/// See [timerTickProvider].
+class TimerTickNotifier extends Notifier<int> {
+  @override
+  int build() => 0;
+
+  /// Advance the counter. Any increment notifies watchers; the
+  /// absolute value is meaningless.
+  void bump() {
+    state = state + 1;
+  }
+}
+
+/// Convenience provider exposing the live remaining-seconds for a
+/// specific timer id. Returns `null` when the timer has never been
+/// ticked (first tick hasn't fired yet) or when it is paused /
+/// cancelled. Watching [timerTickProvider] rebuilds the widget on
+/// every second-flip of any running timer; watching
+/// [timersProvider] additionally rebuilds it when the list itself
+/// changes (pause/resume/cancel) so the fallback to the persisted
+/// value is re-evaluated.
+final liveTimerRemainingForIdProvider = Provider.family<int?, int>((ref, id) {
+  ref.watch(timerTickProvider);
+  ref.watch(timersProvider);
+  return ref.read(timersProvider.notifier).liveRemainingFor(id);
+});
+
+/// Legacy single-timer convenience provider. Returns the live
+/// remaining of the first tracked timer, or `null`. Prefer
+/// [liveTimerRemainingForIdProvider] in new code — multiple
+/// timers can run concurrently and a single scalar can't
+/// represent them all.
 final liveTimerRemainingProvider = Provider<int?>((ref) {
-  // Watch the notifier itself so we get notified on each tick.
+  ref.watch(timerTickProvider);
   ref.watch(timersProvider);
   return ref.read(timersProvider.notifier).liveRemainingForActive;
 });

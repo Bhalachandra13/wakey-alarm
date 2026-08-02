@@ -146,17 +146,19 @@ void main() {
       expect(fakeBridge.scheduledTimers.single['label'], 'Timer');
     });
 
-    test('create() returns false and rolls back when schedule is rejected',
-        () async {
-      fakeBridge.scheduleTimerSuccess = false;
-      final notifier = container.read(timersProvider.notifier);
-      final ok = await notifier.create(label: 'x', durationSeconds: 60);
+    test(
+      'create() returns false and rolls back when schedule is rejected',
+      () async {
+        fakeBridge.scheduleTimerSuccess = false;
+        final notifier = container.read(timersProvider.notifier);
+        final ok = await notifier.create(label: 'x', durationSeconds: 60);
 
-      expect(ok, isFalse);
-      expect(fakeBridge.scheduledTimers, hasLength(1));
-      final list = await container.read(timersProvider.future);
-      expect(list, isEmpty);
-    });
+        expect(ok, isFalse);
+        expect(fakeBridge.scheduledTimers, hasLength(1));
+        final list = await container.read(timersProvider.future);
+        expect(list, isEmpty);
+      },
+    );
 
     test(
       'cancel() removes the row and calls cancelAlarm on the bridge',
@@ -206,26 +208,28 @@ void main() {
       expect(list.first.state, TimerState.running);
     });
 
-    test('resume() returns false and leaves timer paused when schedule fails',
-        () async {
-      final notifier = container.read(timersProvider.notifier);
-      await notifier.create(label: 'x', durationSeconds: 600);
-      final id = (await container.read(timersProvider.future)).first.id!;
-      await notifier.pause(id);
-      fakeBridge.scheduleTimerSuccess = false;
-      fakeBridge.scheduledTimers.clear();
-      final ok = await notifier.resume(id);
-      expect(ok, isFalse);
-      expect(fakeBridge.scheduledTimers, hasLength(1));
-      final list = await container.read(timersProvider.future);
-      expect(list.first.state, TimerState.paused);
-    });
+    test(
+      'resume() returns false and leaves timer paused when schedule fails',
+      () async {
+        final notifier = container.read(timersProvider.notifier);
+        await notifier.create(label: 'x', durationSeconds: 600);
+        final id = (await container.read(timersProvider.future)).first.id!;
+        await notifier.pause(id);
+        fakeBridge.scheduleTimerSuccess = false;
+        fakeBridge.scheduledTimers.clear();
+        final ok = await notifier.resume(id);
+        expect(ok, isFalse);
+        expect(fakeBridge.scheduledTimers, hasLength(1));
+        final list = await container.read(timersProvider.future);
+        expect(list.first.state, TimerState.paused);
+      },
+    );
 
     test('dismissed event for a timer deletes the row', () async {
       // Pre-warm and keep the provider alive so the event listener
       // stays subscribed between pre-warm and event emission.
       await container.read(timersProvider.future);
-      container.listen(timersProvider, (_, __) {});
+      container.listen(timersProvider, (_, _) {});
 
       final notifier = container.read(timersProvider.notifier);
       await notifier.create(label: 'x', durationSeconds: 600);
@@ -263,7 +267,7 @@ void main() {
       () async {
         // Pre-warm and keep the provider alive.
         await container.read(timersProvider.future);
-        container.listen(timersProvider, (_, __) {});
+        container.listen(timersProvider, (_, _) {});
 
         final notifier = container.read(timersProvider.notifier);
         await notifier.create(label: 'x', durationSeconds: 600);
@@ -286,7 +290,7 @@ void main() {
     test('non-timer fired events do not delete the timer row', () async {
       // Pre-warm and keep the provider alive.
       await container.read(timersProvider.future);
-      container.listen(timersProvider, (_, __) {});
+      container.listen(timersProvider, (_, _) {});
 
       // Defensive: if the native side ever sends a "time" triggerType
       // with a timerId-shaped int, the timers notifier should ignore
@@ -335,5 +339,79 @@ void main() {
       // in the widget tests for the timer screen.
       expect(liveBeforeTick, isNull);
     });
+
+    test('live remaining counts down second by second', () async {
+      // Regression guard for the frozen-countdown bug: the live
+      // value must actually decrease as wall-clock time passes,
+      // not sit at the value first shown.
+      final notifier = container.read(timersProvider.notifier);
+      await notifier.create(label: 'x', durationSeconds: 30);
+      final id = (await container.read(timersProvider.future)).single.id!;
+
+      // Wait for the first tick to populate the live value.
+      int? first;
+      for (var i = 0; i < 50; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        first = container.read(timersProvider.notifier).liveRemainingFor(id);
+        if (first != null) break;
+      }
+      expect(first, isNotNull, reason: 'ticker should populate live value');
+
+      // ~2 seconds later the displayed second must have flipped.
+      await Future<void>.delayed(const Duration(seconds: 2));
+      final later = container
+          .read(timersProvider.notifier)
+          .liveRemainingFor(id);
+      expect(later, isNotNull);
+      expect(later, lessThan(first!));
+      // And it must fall at ~1 second per second — no more. The
+      // old ticker subtracted the full elapsed time from a base
+      // that itself shrank every second (it re-persisted the live
+      // value), so the countdown raced to zero at ~1.5–2x speed.
+      final drop = first - later!;
+      expect(
+        drop,
+        lessThanOrEqualTo(3),
+        reason:
+            'countdown must tick at ~1s/s, not double-count '
+            '(dropped $drop s in ~2s)',
+      );
+    });
+
+    test(
+      'a RUNNING timer loaded from the DB counts down (cold start)',
+      () async {
+        // Regression guard for the other half of the frozen-countdown
+        // bug: previously the ticker only started for timers created
+        // or resumed in the current session, so a timer that outlived
+        // the process showed a frozen persisted value forever.
+        final dao = container.read(timerDaoProvider);
+        final startedAt = DateTime.now().subtract(const Duration(seconds: 5));
+        final id = await dao.insert(
+          TimerRecord(
+            label: 'cold',
+            durationSeconds: 60,
+            remainingSeconds: 60,
+            state: TimerState.running,
+            startedAt: startedAt.toIso8601String(),
+          ),
+        );
+
+        // A fresh build loads the row and must seed + start the
+        // ticker without any create()/resume() call.
+        await container.read(timersProvider.future);
+        int? live;
+        for (var i = 0; i < 50; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+          live = container.read(timersProvider.notifier).liveRemainingFor(id);
+          if (live != null) break;
+        }
+        expect(live, isNotNull, reason: 'cold-started timers must be tracked');
+        // ~5s of the 60s run had already elapsed at insert time, so
+        // the live value must be below the base — not frozen at 60.
+        expect(live!, lessThan(60));
+        expect(live, greaterThan(50));
+      },
+    );
   });
 }

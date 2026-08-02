@@ -78,11 +78,11 @@ class TimerRecord {
   /// after creation — pause/resume only affect [remainingSeconds].
   final int durationSeconds;
 
-  /// How much time is left as of the last DB write. For a
-  /// [TimerState.running] timer this is the *persisted* value; the
-  /// UI computes the live value as
-  /// `(startedAt + durationSeconds) - now`. For a paused timer this
-  /// is the exact value to show.
+  /// How much time was left when the current run started, in
+  /// seconds. While [TimerState.running] this value is immutable —
+  /// the live countdown is derived from it as
+  /// `remainingSeconds - (now - startedAt)`, clamped to zero.
+  /// For a paused timer this is the exact frozen value to show.
   final int remainingSeconds;
 
   final TimerState state;
@@ -147,8 +147,8 @@ class TimerRecord {
     final snoozeDurationMin = snooze is int
         ? snooze
         : snooze is num
-            ? snooze.toInt()
-            : defaultSnoozeDurationMin;
+        ? snooze.toInt()
+        : defaultSnoozeDurationMin;
     return TimerRecord(
       id: json['id'] as int?,
       label: json['label'] as String,

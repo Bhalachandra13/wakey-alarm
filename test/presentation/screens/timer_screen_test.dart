@@ -74,6 +74,36 @@ class _FakeTimersNotifier extends TimersNotifier {
   }) async => createShouldSucceed;
 }
 
+/// A notifier that returns a fixed list of seeded timers without
+/// going through the DB. The real [TimersNotifier] starts a
+/// `Timer.periodic` ticker on the first `create()`, which keeps
+/// the test process alive past the test body. The seeded fake is
+/// sufficient for tile-rendering tests; the live tick is covered
+/// by `timers_provider_test.dart`.
+class _SeededTimersNotifier extends TimersNotifier {
+  @override
+  Future<List<TimerRecord>> build() async {
+    return const [
+      TimerRecord(
+        id: 1,
+        label: 'Eggs',
+        durationSeconds: 90,
+        remainingSeconds: 90,
+        state: TimerState.running,
+        startedAt: '2026-07-22T12:00:00Z',
+      ),
+      TimerRecord(
+        id: 2,
+        label: 'Detail target',
+        durationSeconds: 120,
+        remainingSeconds: 120,
+        state: TimerState.running,
+        startedAt: '2026-07-22T12:00:00Z',
+      ),
+    ];
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(sqfliteFfiInit);
@@ -197,6 +227,76 @@ void main() {
       // Default duration 0/5/0 (zero-padded to two digits each).
       expect(find.text('00'), findsNWidgets(2)); // hours + seconds
       expect(find.text('05'), findsOneWidget); // minutes
+    });
+
+    testWidgets(
+      'an active timer tile shows the formatted remaining time',
+      (tester) async {
+        // The "live" countdown is sourced from
+        // [liveTimerRemainingForIdProvider], which reads the
+        // notifier's per-id map. The notifier's ticker is a real
+        // `Timer.periodic`, so we keep the test focused on what
+        // the *tile* renders and assert the formatted DB value is
+        // shown. The provider tests already cover the live tick.
+        final container = ProviderContainer(
+          overrides: [
+            timersProvider.overrideWith(_SeededTimersNotifier.new),
+          ],
+        );
+        addTearDown(container.dispose);
+
+        await tester.pumpWidget(
+          UncontrolledProviderScope(
+            container: container,
+            child: const MaterialApp(home: Scaffold(body: TimerScreen())),
+          ),
+        );
+        await tester.pump();
+
+        // The seeded timer is in the list and the tile shows it.
+        expect(find.text('Eggs'), findsOneWidget);
+        // The formatted remaining time is "01:30" (90s = 1:30).
+        expect(find.text('01:30'), findsOneWidget);
+      },
+    );
+
+    testWidgets('tapping a timer tile opens the detail screen', (
+      tester,
+    ) async {
+      final container = ProviderContainer(
+        overrides: [
+          timersProvider.overrideWith(_SeededTimersNotifier.new),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(home: Scaffold(body: TimerScreen())),
+        ),
+      );
+      await tester.pump();
+
+      // Tap the label — the whole tile is a tap target.
+      await tester.tap(find.text('Detail target'));
+      // The detail screen has a repeating AnimationController for
+      // the heartbeat pulse, so `pumpAndSettle` would never
+      // complete. A single `pump` is enough to push the new
+      // route onto the navigator and run the first build.
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      // The detail screen has the timer label in its AppBar.
+      expect(find.text('Detail target'), findsWidgets);
+      // The state pill is visible.
+      expect(find.text('Running'), findsOneWidget);
+
+      // Pop the detail screen so its AnimationController is
+      // disposed — the `repeat()` controller would otherwise keep
+      // the test process alive past this body.
+      await tester.pageBack();
+      await tester.pump();
     });
 
     testWidgets('shows exact-alarm permission banner when denied', (

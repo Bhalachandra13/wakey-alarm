@@ -66,10 +66,12 @@ class TimerDao {
     return db.delete('timers', where: 'id = ?', whereArgs: [id]);
   }
 
-  /// Update only the persisted `remaining_seconds` for a running
-  /// timer. Called periodically by the Dart-side ticker so the UI has
-  /// a reasonable starting value if the app is killed and reopened
-  /// mid-countdown.
+  /// Update only the persisted `remaining_seconds` for a timer.
+  /// Used when the native ringing/snooze flow takes over a timer
+  /// (the row is pinned to 0 so the UI fallback shows 00:00 rather
+  /// than the run's base value). The countdown ticker itself never
+  /// writes — while RUNNING, `remaining_seconds` is the immutable
+  /// base the live countdown is derived from.
   Future<int> updateRemaining(int id, int remainingSeconds) async {
     final db = await database.open();
     return db.update(

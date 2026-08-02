@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:wakey_alarm/domain/timer_record.dart';
 import 'package:wakey_alarm/presentation/providers/timers_provider.dart';
+import 'package:wakey_alarm/presentation/screens/timer_detail_screen.dart';
 import 'package:wakey_alarm/presentation/widgets/exact_alarm_banner.dart';
 
 /// The Timer tab. Lists all active (RUNNING/PAUSED) timers and
@@ -14,7 +15,6 @@ class TimerScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final timersAsync = ref.watch(timersProvider);
-    final liveRemaining = ref.watch(liveTimerRemainingProvider);
 
     return Stack(
       children: [
@@ -61,10 +61,7 @@ class TimerScreen extends ConsumerWidget {
                   if (timers.isEmpty) {
                     return const _EmptyTimersView();
                   }
-                  return _TimersList(
-                    timers: timers,
-                    liveRemaining: liveRemaining,
-                  );
+                  return _TimersList(timers: timers);
                 },
               ),
             ),
@@ -115,17 +112,15 @@ class _EmptyTimersView extends StatelessWidget {
 }
 
 class _TimersList extends ConsumerWidget {
-  const _TimersList({required this.timers, required this.liveRemaining});
+  const _TimersList({required this.timers});
 
   final List<TimerRecord> timers;
-  final int? liveRemaining;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // Show the actively-counting-down timer first. Subsequent timers
-    // follow in insertion order. We only show one `liveRemaining`
-    // per screen (the first active running timer); the rest are
-    // rendered from their DB value.
+    // Show the actively-counting-down timers first. Subsequent
+    // timers follow in insertion order. Within each group the
+    // original `startedAt DESC` order from the DAO is preserved.
     final sorted = [...timers];
     sorted.sort((a, b) {
       final aRunning = a.state == TimerState.running ? 0 : 1;
@@ -137,26 +132,27 @@ class _TimersList extends ConsumerWidget {
       itemCount: sorted.length,
       itemBuilder: (context, index) {
         final t = sorted[index];
-        return _TimerCard(
-          timer: t,
-          liveRemaining: index == 0 && t.state == TimerState.running
-              ? liveRemaining
-              : null,
-        );
+        return _TimerCard(timer: t);
       },
     );
   }
 }
 
 class _TimerCard extends ConsumerWidget {
-  const _TimerCard({required this.timer, required this.liveRemaining});
+  const _TimerCard({required this.timer});
 
   final TimerRecord timer;
-  final int? liveRemaining;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+    // The live remaining-seconds are looked up by id so every
+    // running timer on screen ticks down in lockstep with the
+    // shared ticker. Paused / cancelled timers return `null` from
+    // the provider and we fall back to the persisted DB value.
+    final liveRemaining = timer.id == null
+        ? null
+        : ref.watch(liveTimerRemainingForIdProvider(timer.id!));
     final remaining = liveRemaining ?? timer.remainingSeconds;
     final isRunning = timer.state == TimerState.running;
     return Dismissible(
@@ -178,53 +174,97 @@ class _TimerCard extends ConsumerWidget {
       },
       child: Card(
         margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        child: ListTile(
-          leading: Icon(
-            isRunning ? Icons.timer : Icons.timer_off,
-            color: isRunning
-                ? theme.colorScheme.primary
-                : theme.colorScheme.onSurfaceVariant,
-            size: 32,
-          ),
-          title: Text(timer.label, style: theme.textTheme.titleMedium),
-          subtitle: Text(_formatRemaining(remaining)),
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              IconButton(
-                icon: Icon(isRunning ? Icons.pause : Icons.play_arrow),
-                tooltip: isRunning ? 'Pause' : 'Resume',
-                onPressed: () async {
-                  if (timer.id == null) return;
-                  final notifier = ref.read(timersProvider.notifier);
-                  if (isRunning) {
-                    await notifier.pause(timer.id!);
-                  } else {
-                    final ok = await notifier.resume(timer.id!);
-                    if (!ok && context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text(
-                            'Could not resume the timer. Grant the '
-                            '"Alarms & reminders" permission, then try again.',
-                          ),
-                          duration: Duration(seconds: 5),
+        // The whole tile is now a tap target that opens the
+        // detail/countdown screen. The trailing pause / cancel
+        // buttons sit *inside* the tile and the InkWell still
+        // propagates taps that miss the IconButtons, so both
+        // surfaces are usable.
+        child: InkWell(
+          onTap: timer.id == null
+              ? null
+              : () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          TimerDetailScreen(timerId: timer.id!),
+                    ),
+                  );
+                },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Row(
+              children: [
+                Icon(
+                  isRunning ? Icons.timer : Icons.timer_off,
+                  color: isRunning
+                      ? theme.colorScheme.primary
+                      : theme.colorScheme.onSurfaceVariant,
+                  size: 32,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        timer.label,
+                        style: theme.textTheme.titleMedium,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 2),
+                      // The live countdown. `tabularFigures` keeps
+                      // the digit width constant so the text doesn't
+                      // jiggle horizontally as the seconds change.
+                      Text(
+                        _formatRemaining(remaining),
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          color: isRunning
+                              ? theme.colorScheme.primary
+                              : theme.colorScheme.onSurfaceVariant,
+                          fontFeatures: const [
+                            FontFeature.tabularFigures(),
+                          ],
                         ),
-                      );
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon: Icon(isRunning ? Icons.pause : Icons.play_arrow),
+                  tooltip: isRunning ? 'Pause' : 'Resume',
+                  onPressed: () async {
+                    if (timer.id == null) return;
+                    final notifier = ref.read(timersProvider.notifier);
+                    if (isRunning) {
+                      await notifier.pause(timer.id!);
+                    } else {
+                      final ok = await notifier.resume(timer.id!);
+                      if (!ok && context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text(
+                              'Could not resume the timer. Grant the '
+                              '"Alarms & reminders" permission, then try again.',
+                            ),
+                            duration: Duration(seconds: 5),
+                          ),
+                        );
+                      }
                     }
-                  }
-                },
-              ),
-              IconButton(
-                icon: const Icon(Icons.close),
-                tooltip: 'Cancel',
-                onPressed: () {
-                  if (timer.id != null) {
-                    ref.read(timersProvider.notifier).cancel(timer.id!);
-                  }
-                },
-              ),
-            ],
+                  },
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  tooltip: 'Cancel',
+                  onPressed: () {
+                    if (timer.id != null) {
+                      ref.read(timersProvider.notifier).cancel(timer.id!);
+                    }
+                  },
+                ),
+              ],
+            ),
           ),
         ),
       ),
