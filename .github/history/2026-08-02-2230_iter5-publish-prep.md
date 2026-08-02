@@ -2,7 +2,7 @@
 
 - **Date:** 2026-08-02 22:30
 - **Iteration:** 5 (publishing prep — does not touch runtime behaviour)
-- **Commit:** *(filled in after committing)*
+- **Commit:** `cb87a3d`
 
 ## What changed
 
