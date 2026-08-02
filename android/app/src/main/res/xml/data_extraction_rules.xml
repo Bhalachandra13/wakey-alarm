@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Data extraction rules (Android API 31+).
+
+  Controls what is backed up to the cloud and what is allowed
+  to be transferred to another device via device-to-device
+  migration. We include the app's data so a user who gets a
+  new phone keeps their alarms / timers / favourite locations;
+  we exclude cache and no_backup directories by default.
+
+  See https://developer.android.com/about/versions/12/backup-restore
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="sharedpref" path="."/>
+        <include domain="database" path="."/>
+        <include domain="file" path="."/>
+        <!--
+          Cache is never backed up by the platform by default,
+          and `cache` isn't a valid exclude domain in this
+          schema (the lint check fails the build), so we don't
+          list it here.
+        -->
+    </cloud-backup>
+    <device-transfer>
+        <include domain="sharedpref" path="."/>
+        <include domain="database" path="."/>
+        <include domain="file" path="."/>
+        <!-- Same rationale as cloud-backup above. -->
+    </device-transfer>
+</data-extraction-rules>

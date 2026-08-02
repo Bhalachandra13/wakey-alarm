@@ -30,7 +30,10 @@
     <application
         android:label="Wakey-Wakey"
         android:name=".WakeyApplication"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules">
         <!-- Google Maps API key. Replace the value with a real key
              from the Google Cloud Console before shipping. The
              Maps SDK will fail to load tiles without a valid key,

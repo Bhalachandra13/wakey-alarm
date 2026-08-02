@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Adaptive launcher icon background. Matches the deep blue
+      used by the brand (#1E3A8A). The launcher shows this colour
+      in the unmasked area around the foreground drawable; it's
+      also the colour the Play Store uses for the listing icon's
+      background.
+    -->
+    <color name="ic_launcher_background">#1E3A8A</color>
+</resources>

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Auto-backup rules (Android API 23-30). Controls what the
+  platform's auto-backup includes when it periodically
+  snapshots the app's data. Mirrors data_extraction_rules.xml
+  (API 31+) so behaviour is consistent across versions.
+
+  See https://developer.android.com/guide/topics/data/autobackup
+-->
+<full-backup-content>
+    <include domain="sharedpref" path="."/>
+    <include domain="database" path="."/>
+    <include domain="file" path="."/>
+    <!--
+      Cache is never backed up by the platform by default, and
+      `cache` isn't a valid exclude domain in this schema (the
+      lint check fails the build), so we don't list it here.
+    -->
+</full-backup-content>
