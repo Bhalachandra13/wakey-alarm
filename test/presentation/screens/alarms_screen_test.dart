@@ -447,17 +447,15 @@ class _StubAlarmsNotifier extends AlarmsNotifier {
 class _FakeGeofenceBridge extends GeofenceBridge {
   _FakeGeofenceBridge({
     this.permissionStatus = LocationPermissionStatus.grantedForegroundAndBackground,
-    this.batteryExempt = true,
   }) : super();
 
   final LocationPermissionStatus permissionStatus;
-  final bool batteryExempt;
 
   @override
   Future<LocationPermissionStatus> getPermissionStatus() async => permissionStatus;
 
   @override
-  Future<bool> isBatteryOptimizationExempt() async => batteryExempt;
+  Future<bool> isBatteryOptimizationExempt() async => true;
 }
 
 class _FakeAlarmBridge implements AlarmBridge {
