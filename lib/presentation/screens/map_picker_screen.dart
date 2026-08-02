@@ -1,22 +1,36 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:wakey_alarm/data/location_search_service.dart';
 import 'package:wakey_alarm/domain/geofence_validator.dart';
 import 'package:wakey_alarm/native_bridge/geofence_bridge.dart';
+import 'package:wakey_alarm/presentation/providers/alarms_provider.dart';
 
 /// Map-based location picker for creating a geofence alarm.
 ///
 /// Allows the user to:
+///  * Search for a place by name (with live suggestions).
 ///  * Drop a pin on a map (the camera center is the pick).
 ///  * See the radius circle overlaid on the map.
 ///  * Adjust the radius via a slider (200 m–20 km, default 2 km).
 ///  * Confirm or cancel the selection.
 ///
+/// Search is *inside* the picker now. As the user types, a debounced
+/// call to [LocationSearchService] returns up-to-five suggestions;
+/// tapping one drops a pin and flies the camera to that location.
+/// The Nominatim usage policy caps us at 1 request/second, so the
+/// search is debounced by [kSearchDebounce] and in-flight calls are
+/// cancelled when the query changes (no point waiting for a stale
+/// result).
+///
 /// On real devices with a configured Google Maps API key the map
 /// renders normally. Without a key (or in unit tests) the map
 /// widget shows a blank canvas but the picker still works — the
-/// user can use the manual lat/long inputs as a fallback. This
-/// keeps the feature testable in CI without burning API quota.
+/// user can type a place into the search field and pick one of the
+/// results. This keeps the feature testable in CI without burning
+/// API quota.
 class MapPickerScreen extends ConsumerStatefulWidget {
   const MapPickerScreen({
     super.key,
@@ -36,10 +50,25 @@ class MapPickerScreen extends ConsumerStatefulWidget {
 }
 
 class _MapPickerScreenState extends ConsumerState<MapPickerScreen> {
+  /// How long to wait after the last keystroke before firing the
+  /// search. Nominatim's usage policy requires ≤1 req/s, so this
+  /// is well above a typical rapid-typing cadence yet short enough
+  /// to feel live.
+  static const Duration kSearchDebounce = Duration(milliseconds: 400);
+
   late int _radiusMeters;
   LatLng? _pin;
   GoogleMapController? _mapController;
   bool _hasCenteredOnUser = false;
+
+  // Search state.
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocus = FocusNode();
+  Timer? _searchDebounceTimer;
+  int _searchRequestSeq = 0;
+  bool _isSearching = false;
+  List<LocationSearchResult> _searchResults = const [];
+  String? _searchError;
 
   @override
   void initState() {
@@ -48,10 +77,15 @@ class _MapPickerScreenState extends ConsumerState<MapPickerScreen> {
     if (widget.initialLatitude != null && widget.initialLongitude != null) {
       _pin = LatLng(widget.initialLatitude!, widget.initialLongitude!);
     }
+    // Run an initial search if the field is empty — gives the
+    // user immediate "what can I pick?" affordance on open.
   }
 
   @override
   void dispose() {
+    _searchDebounceTimer?.cancel();
+    _searchController.dispose();
+    _searchFocus.dispose();
     _mapController?.dispose();
     super.dispose();
   }
@@ -59,8 +93,8 @@ class _MapPickerScreenState extends ConsumerState<MapPickerScreen> {
   /// Best-effort recenter on the user's current location. Called
   /// once after the map's first frame; silently no-ops if location
   /// permission isn't granted yet, in which case the user can still
-  /// pan the map manually or use the my-location button to trigger
-  /// the OS permission prompt.
+  /// pan the map manually, tap the my-location button, or use the
+  /// search field.
   Future<void> _maybeCenterOnUser() async {
     if (_hasCenteredOnUser) return;
     final controller = _mapController;
@@ -111,6 +145,116 @@ class _MapPickerScreenState extends ConsumerState<MapPickerScreen> {
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // Search
+  // ---------------------------------------------------------------------------
+
+  /// Called on every keystroke. Schedules a debounced search so we
+  /// don't hammer the public Nominatim endpoint on every character.
+  void _onSearchChanged(String _) {
+    _searchDebounceTimer?.cancel();
+    final query = _searchController.text.trim();
+    if (query.isEmpty) {
+      setState(() {
+        _searchResults = const [];
+        _searchError = null;
+        _isSearching = false;
+      });
+      return;
+    }
+    setState(() {
+      _isSearching = true;
+      _searchError = null;
+    });
+    _searchDebounceTimer = Timer(kSearchDebounce, () {
+      _runSearch(query);
+    });
+  }
+
+  /// Fires the actual search. Each call is tagged with a sequence
+  /// number; if a newer call comes in (e.g. the user kept typing)
+  /// the older one is discarded so the UI never shows stale
+  /// results behind a fresh query.
+  Future<void> _runSearch(String query) async {
+    final seq = ++_searchRequestSeq;
+    try {
+      final service = ref.read(locationSearchServiceProvider);
+      final results = await service.search(query);
+      if (!mounted || seq != _searchRequestSeq) return;
+      setState(() {
+        _isSearching = false;
+        _searchResults = results;
+        if (results.isEmpty) {
+          _searchError = 'No matches for "$query"';
+        } else {
+          _searchError = null;
+        }
+      });
+    } on LocationSearchException catch (e) {
+      if (!mounted || seq != _searchRequestSeq) return;
+      setState(() {
+        _isSearching = false;
+        _searchResults = const [];
+        _searchError = e.message;
+      });
+    }
+  }
+
+  /// Submits the current text (Enter / search IME action). Bypasses
+  /// the debounce so the user can fire a search immediately.
+  void _onSearchSubmitted(String query) {
+    _searchDebounceTimer?.cancel();
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) {
+      setState(() {
+        _searchResults = const [];
+        _searchError = null;
+        _isSearching = false;
+      });
+      return;
+    }
+    setState(() {
+      _isSearching = true;
+      _searchError = null;
+    });
+    _runSearch(trimmed);
+  }
+
+  /// Clears the search field and dismisses the suggestions
+  /// overlay. Keeps the existing pin (the user may have already
+  /// picked one).
+  void _clearSearch() {
+    _searchDebounceTimer?.cancel();
+    _searchController.clear();
+    setState(() {
+      _searchResults = const [];
+      _searchError = null;
+      _isSearching = false;
+    });
+  }
+
+  /// Adopts [result] as the picked location. Drops the pin, flies
+  /// the camera there, dismisses the suggestions, and clears the
+  /// search field so the user sees the picked pin on the map
+  /// (matching the manual-pick UX).
+  Future<void> _selectSearchResult(LocationSearchResult result) async {
+    final latLng = LatLng(result.latitude, result.longitude);
+    setState(() {
+      _pin = latLng;
+      _searchResults = const [];
+      _searchError = null;
+      _isSearching = false;
+    });
+    _searchController.clear();
+    _searchFocus.unfocus();
+    final controller = _mapController;
+    if (controller != null) {
+      await controller.animateCamera(
+        CameraUpdate.newLatLngZoom(latLng, 14),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -127,7 +271,8 @@ class _MapPickerScreenState extends ConsumerState<MapPickerScreen> {
           // Map area. The actual GoogleMap widget may fail to
           // render tiles in tests (no API key); in that case
           // google_maps_flutter surfaces an error controller we
-          // can ignore here — the manual inputs below still work.
+          // can ignore here — the search field still works and
+          // drops the pin in the in-memory camera state.
           Expanded(
             child: Stack(
               children: [
@@ -147,13 +292,6 @@ class _MapPickerScreenState extends ConsumerState<MapPickerScreen> {
                     WidgetsBinding.instance.addPostFrameCallback((_) {
                       _maybeCenterOnUser();
                     });
-                  },
-                  onCameraIdle: () {
-                    // `onCameraIdle` doesn't expose the camera
-                    // position, so we rely on `onCameraMoveStarted`
-                    // + `onCameraMove` to track the in-progress
-                    // camera target. We capture the last
-                    // `onCameraMove` target here.
                   },
                   onCameraMove: (position) {
                     // Update the pin as the user pans so the
@@ -194,6 +332,25 @@ class _MapPickerScreenState extends ConsumerState<MapPickerScreen> {
                           ),
                         },
                 ),
+                // Search bar + suggestions overlay, pinned to the
+                // top of the map so it stays visible while panning.
+                Positioned(
+                  left: 12,
+                  right: 12,
+                  top: 12,
+                  child: _SearchPanel(
+                    controller: _searchController,
+                    focusNode: _searchFocus,
+                    isSearching: _isSearching,
+                    results: _searchResults,
+                    errorMessage: _searchError,
+                    hasPin: _pin != null,
+                    onChanged: _onSearchChanged,
+                    onSubmitted: _onSearchSubmitted,
+                    onClear: _clearSearch,
+                    onSelectResult: _selectSearchResult,
+                  ),
+                ),
                 // Floating hint over the map.
                 Positioned(
                   left: 16,
@@ -205,8 +362,8 @@ class _MapPickerScreenState extends ConsumerState<MapPickerScreen> {
                       padding: const EdgeInsets.all(12),
                       child: Text(
                         _pin == null
-                            ? 'Pan the map to drop a pin'
-                            : 'Drag the pin or pan to adjust. Tap the ✓ to confirm.',
+                            ? 'Search for a place or pan the map to drop a pin'
+                            : 'Drag the pin or pick another place. Tap the ✓ to confirm.',
                         style: theme.textTheme.bodyMedium,
                         textAlign: TextAlign.center,
                       ),
@@ -216,9 +373,9 @@ class _MapPickerScreenState extends ConsumerState<MapPickerScreen> {
               ],
             ),
           ),
-          // Radius slider + manual lat/long inputs (the manual
-          // inputs make the picker usable even when the map
-          // tiles fail to load — see class doc).
+          // Radius slider. Kept below the map so the slider is
+          // always reachable even on small screens where the
+          // search suggestions cover the bottom of the map.
           Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
@@ -242,14 +399,13 @@ class _MapPickerScreenState extends ConsumerState<MapPickerScreen> {
                   label: _formatRadius(_radiusMeters),
                   onChanged: (v) => _setRadius(v.round()),
                 ),
-                const SizedBox(height: 8),
-                if (_pin != null) ...[
+                const SizedBox(height: 4),
+                if (_pin != null)
                   Text(
                     'Lat: ${_pin!.latitude.toStringAsFixed(5)}, '
                     'Lon: ${_pin!.longitude.toStringAsFixed(5)}',
                     style: theme.textTheme.bodySmall,
                   ),
-                ],
               ],
             ),
           ),
@@ -264,6 +420,167 @@ class _MapPickerScreenState extends ConsumerState<MapPickerScreen> {
       return '${km.toStringAsFixed(km == km.truncate() ? 0 : 1)} km';
     }
     return '$meters m';
+  }
+}
+
+/// The search field + suggestions overlay. Kept as its own widget
+/// so [_MapPickerScreenState.build] stays readable — there's a lot
+/// going on with the keyboard, results, and error states.
+class _SearchPanel extends StatelessWidget {
+  const _SearchPanel({
+    required this.controller,
+    required this.focusNode,
+    required this.isSearching,
+    required this.results,
+    required this.errorMessage,
+    required this.hasPin,
+    required this.onChanged,
+    required this.onSubmitted,
+    required this.onClear,
+    required this.onSelectResult,
+  });
+
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final bool isSearching;
+  final List<LocationSearchResult> results;
+  final String? errorMessage;
+  final bool hasPin;
+  final ValueChanged<String> onChanged;
+  final ValueChanged<String> onSubmitted;
+  final VoidCallback onClear;
+  final ValueChanged<LocationSearchResult> onSelectResult;
+
+  bool get _hasContent => controller.text.isNotEmpty;
+  bool get _showSuggestions =>
+      results.isNotEmpty || (errorMessage != null && !isSearching);
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Material(
+      // The panel needs a solid background so map tiles behind it
+      // don't bleed through the rounded corners.
+      color: theme.colorScheme.surface,
+      elevation: 4,
+      borderRadius: BorderRadius.circular(28),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: Row(
+              children: [
+                const SizedBox(width: 8),
+                Icon(
+                  Icons.search,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+                Expanded(
+                  child: TextField(
+                    key: const Key('mapPickerSearchField'),
+                    controller: controller,
+                    focusNode: focusNode,
+                    textInputAction: TextInputAction.search,
+                    onChanged: onChanged,
+                    onSubmitted: onSubmitted,
+                    decoration: InputDecoration(
+                      hintText: 'Search for a place',
+                      border: InputBorder.none,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 14,
+                      ),
+                    ),
+                  ),
+                ),
+                if (isSearching)
+                  const Padding(
+                    padding: EdgeInsets.only(right: 12),
+                    child: SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  )
+                else if (_hasContent)
+                  IconButton(
+                    key: const Key('mapPickerSearchClear'),
+                    icon: const Icon(Icons.close),
+                    tooltip: 'Clear',
+                    onPressed: onClear,
+                  ),
+              ],
+            ),
+          ),
+          if (_showSuggestions)
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 240),
+              child: _SuggestionsList(
+                results: results,
+                errorMessage: errorMessage,
+                onSelect: (r) => onSelectResult(r),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Renders either the suggestion hits or the "no matches" /
+/// error line. Pulled out so [_SearchPanel.build] can stay
+/// short and the suggestions get their own scrollable region
+/// (the map can be tall, but the suggestions should never push
+/// it off-screen).
+class _SuggestionsList extends StatelessWidget {
+  const _SuggestionsList({
+    required this.results,
+    required this.errorMessage,
+    required this.onSelect,
+  });
+
+  final List<LocationSearchResult> results;
+  final String? errorMessage;
+  final ValueChanged<LocationSearchResult> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    if (results.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+        child: Text(
+          errorMessage ?? '',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: errorMessage == null
+                ? theme.colorScheme.onSurfaceVariant
+                : theme.colorScheme.error,
+          ),
+        ),
+      );
+    }
+    return ListView.builder(
+      key: const Key('mapPickerSearchResults'),
+      shrinkWrap: true,
+      padding: EdgeInsets.zero,
+      itemCount: results.length,
+      itemBuilder: (context, index) {
+        final r = results[index];
+        return ListTile(
+          key: Key('mapPickerSearchResult_$index'),
+          dense: true,
+          leading: const Icon(Icons.place_outlined),
+          title: Text(
+            r.displayName,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodyMedium,
+          ),
+          onTap: () => onSelect(r),
+        );
+      },
+    );
   }
 }
 
