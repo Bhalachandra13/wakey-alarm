@@ -36,6 +36,8 @@ class _FakeGeofenceBridge extends GeofenceBridge {
       LocationPermissionStatus.grantedForegroundAndBackground;
   GeoPoint? currentLocation = const GeoPoint(latitude: 0, longitude: 0);
   bool addResult = true;
+  String addError = 'simulated failure';
+  int? addErrorCode;
   bool removeResult = true;
   bool batteryExempt = true;
 
@@ -60,7 +62,7 @@ class _FakeGeofenceBridge extends GeofenceBridge {
   }) async => currentLocation;
 
   @override
-  Future<bool> addGeofence({
+  Future<GeofenceResult> addGeofence({
     required int alarmId,
     required double latitude,
     required double longitude,
@@ -84,13 +86,18 @@ class _FakeGeofenceBridge extends GeofenceBridge {
       'snoozeDurationMin': snoozeDurationMin,
       'maxSnoozeCount': maxSnoozeCount,
     });
-    return addResult;
+    if (addResult) {
+      return const GeofenceResult.ok();
+    }
+    return GeofenceResult.failed(error: addError, code: addErrorCode);
   }
 
   @override
-  Future<bool> removeGeofence(int alarmId) async {
+  Future<GeofenceResult> removeGeofence(int alarmId) async {
     removeCalls.add(alarmId);
-    return removeResult;
+    return removeResult
+        ? const GeofenceResult.ok()
+        : GeofenceResult.failed(error: 'simulated remove failure');
   }
 
   @override
@@ -291,6 +298,8 @@ void main() {
 
     test('returns registrationFailed when addGeofence fails', () async {
       fakeGeofenceBridge.addResult = false;
+      fakeGeofenceBridge.addError = 'Location services are off';
+      fakeGeofenceBridge.addErrorCode = 1004;
       fakeGeofenceBridge.currentLocation = const GeoPoint(
         latitude: 52.4862,
         longitude: -1.8904,
@@ -299,6 +308,9 @@ void main() {
       final controller = container.read(geofenceArmingControllerProvider);
       final result = await controller.armAlarm(alarm);
       expect(result.outcome, ArmingOutcome.registrationFailed);
+      // The native error string should be propagated so the UI
+      // can tell the user *why* the geofence could not be armed.
+      expect(result.message, 'Location services are off');
     });
 
     test('arms even when getCurrentLocation returns null (fallback)', () async {

@@ -115,7 +115,15 @@ class GeofenceBridge {
   /// registration so that the native ringing UI and the boot-time
   /// re-arming logic have access to the alarm's metadata even when
   /// the Flutter engine is not running.
-  Future<bool> addGeofence({
+  ///
+  /// Returns a [GeofenceResult] describing success or failure with
+  /// a human-readable error string. Any unexpected
+  /// [PlatformException] thrown by the channel (defensive — the
+  /// native side now returns a structured result on all known
+  /// failure modes) is caught and turned into a [GeofenceResult]
+  /// with a generic message so the caller can render it in the UI
+  /// instead of crashing with a red error banner.
+  Future<GeofenceResult> addGeofence({
     required int alarmId,
     required double latitude,
     required double longitude,
@@ -127,30 +135,58 @@ class GeofenceBridge {
     int snoozeDurationMin = 10,
     int maxSnoozeCount = -1,
   }) async {
-    final result = await _methodChannel
-        .invokeMapMethod<String, Object?>('addGeofence', <String, Object?>{
-          'alarmId': alarmId,
-          'latitude': latitude,
-          'longitude': longitude,
-          'radiusMeters': radiusMeters,
-          'expirationMillis': expirationMillis,
-          'label': label,
-          'soundUri': soundUri,
-          'vibrate': vibrate,
-          'snoozeDurationMin': snoozeDurationMin,
-          'maxSnoozeCount': maxSnoozeCount,
-        });
-    return result?['added'] == true;
+    Map<String, Object?>? result;
+    try {
+      result = await _methodChannel
+          .invokeMapMethod<String, Object?>(
+            'addGeofence',
+            <String, Object?>{
+              'alarmId': alarmId,
+              'latitude': latitude,
+              'longitude': longitude,
+              'radiusMeters': radiusMeters,
+              'expirationMillis': expirationMillis,
+              'label': label,
+              'soundUri': soundUri,
+              'vibrate': vibrate,
+              'snoozeDurationMin': snoozeDurationMin,
+              'maxSnoozeCount': maxSnoozeCount,
+            },
+          );
+    } on PlatformException catch (e) {
+      // Defensive: the native side now returns {added: false, error}
+      // for known failure modes instead of calling result.error.
+      // This catch is here for unexpected channel-level errors
+      // (e.g. the channel itself was unregistered) so the UI
+      // still gets a readable message instead of an uncaught
+      // exception.
+      return GeofenceResult.failed(error: e.message ?? 'Native error: ${e.code}');
+    }
+    if (result?['added'] == true) {
+      return const GeofenceResult.ok();
+    }
+    final error = (result?['error'] as String?) ?? 'Unknown error';
+    final code = (result?['code'] as num?)?.toInt();
+    return GeofenceResult.failed(error: error, code: code);
   }
 
   /// Removes a previously-registered geofence. Idempotent — calling
   /// it for an alarmId that isn't registered is a no-op.
-  Future<bool> removeGeofence(int alarmId) async {
-    final result = await _methodChannel.invokeMapMethod<String, Object?>(
-      'removeGeofence',
-      <String, Object?>{'alarmId': alarmId},
-    );
-    return result?['removed'] == true;
+  Future<GeofenceResult> removeGeofence(int alarmId) async {
+    Map<String, Object?>? result;
+    try {
+      result = await _methodChannel.invokeMapMethod<String, Object?>(
+        'removeGeofence',
+        <String, Object?>{'alarmId': alarmId},
+      );
+    } on PlatformException catch (e) {
+      return GeofenceResult.failed(error: e.message ?? 'Native error: ${e.code}');
+    }
+    if (result?['removed'] == true) {
+      return const GeofenceResult.ok();
+    }
+    final error = (result?['error'] as String?) ?? 'Unknown error';
+    return GeofenceResult.failed(error: error);
   }
 
   /// Returns `true` if the app is currently exempt from battery
@@ -209,6 +245,28 @@ class GeoPoint {
 
   @override
   int get hashCode => Object.hash(latitude, longitude);
+}
+
+/// Result of an attempt to register or remove a geofence. The
+/// native side returns a structured `{added: bool, error?:
+/// String, code?: int}` payload on failure, with a humanized
+/// message that the UI can surface directly. We wrap the raw
+/// call in [GeofenceBridge.addGeofence] / [GeofenceBridge.removeGeofence]
+/// and translate it into a [GeofenceResult] so callers don't have
+/// to deal with nullable maps and string keys.
+class GeofenceResult {
+  const GeofenceResult.ok()
+    : ok = true,
+      error = null,
+      code = null;
+  const GeofenceResult.failed({required this.error, this.code}) : ok = false;
+  final bool ok;
+  final String? error;
+  final int? code;
+
+  @override
+  String toString() =>
+      ok ? 'GeofenceResult.ok' : 'GeofenceResult.failed($error, code=$code)';
 }
 
 /// Singleton bridge provider. Override in tests with a fake.

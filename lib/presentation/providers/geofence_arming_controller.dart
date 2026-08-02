@@ -83,7 +83,7 @@ class GeofenceArmingController {
     // the native side can persist it; the ringing UI and boot-time
     // re-arming need label/sound/vibrate/snooze even when the
     // Flutter engine is not running.
-    final added = await _bridge.addGeofence(
+    final addResult = await _bridge.addGeofence(
       alarmId: alarmId,
       latitude: alarm.latitude!,
       longitude: alarm.longitude!,
@@ -94,8 +94,8 @@ class GeofenceArmingController {
       snoozeDurationMin: alarm.snoozeDurationMin,
       maxSnoozeCount: alarm.maxSnoozeCount ?? -1,
     );
-    if (!added) {
-      return const ArmingResult.registrationFailed();
+    if (!addResult.ok) {
+      return ArmingResult.registrationFailed(message: addResult.error);
     }
 
     // 5. Flip the armed flag in the DB so the UI shows the
@@ -123,12 +123,17 @@ class GeofenceArmingController {
 }
 
 /// Result of an arming attempt. Encodes all the outcomes the UI
-/// needs to render — no exceptions, no error strings.
+/// needs to render — no exceptions, no error strings. The
+/// [message] field carries an optional human-readable detail for
+/// the failure outcomes (notably [ArmingOutcome.registrationFailed])
+/// so the UI can tell the user *why* the geofence could not be
+/// armed instead of just saying "it failed".
 class ArmingResult {
   const ArmingResult._({
     required this.outcome,
     this.permissionStatus,
     this.distanceMeters,
+    this.message,
   });
 
   const ArmingResult.armed() : this._(outcome: ArmingOutcome.armed);
@@ -141,8 +146,8 @@ class ArmingResult {
 
   const ArmingResult.alreadyArmed() : this._(outcome: ArmingOutcome.alreadyArmed);
 
-  const ArmingResult.registrationFailed()
-    : this._(outcome: ArmingOutcome.registrationFailed);
+  const ArmingResult.registrationFailed({String? message})
+    : this._(outcome: ArmingOutcome.registrationFailed, message: message);
 
   const ArmingResult.permissionMissing(LocationPermissionStatus status)
     : this._(
@@ -156,6 +161,7 @@ class ArmingResult {
   final ArmingOutcome outcome;
   final LocationPermissionStatus? permissionStatus;
   final double? distanceMeters;
+  final String? message;
 }
 
 enum ArmingOutcome {

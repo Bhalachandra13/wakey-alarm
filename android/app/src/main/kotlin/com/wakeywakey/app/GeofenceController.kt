@@ -182,13 +182,43 @@ object GeofenceController {
             }
         } catch (se: SecurityException) {
             // Location permission was revoked between the status
-            // check and the actual operation. Return a structured
-            // error so Dart can re-request.
+            // check and the actual operation. Surface a structured
+            // failure to the caller so the Dart arming flow can
+            // re-route through the permission prompt instead of
+            // bubbling up a raw PlatformException that the UI
+            // doesn't know how to render. We use a result.success
+            // with `added=false` + a specific error code rather
+            // than result.error because the MethodChannel contract
+            // for `addGeofence` is `returns {added: bool, error?:
+            // string}`; a result.error here would surface as an
+            // uncaught PlatformException in the Dart code.
             Log.w(TAG, "SecurityException in $method", se)
-            result.error("permission_denied", se.message, null)
+            result.success(
+                mapOf("added" to false, "error" to "permission_denied"),
+            )
+        } catch (api: com.google.android.gms.common.api.ApiException) {
+            // Play Services geofence operations throw ApiException
+            // with a status code from
+            // GeofenceStatusCodes / CommonStatusCodes. The human
+            // message is usually empty or generic ("8: "), so
+            // translating the code into something the UI can
+            // surface is essential. Without this, a failed
+            // addGeofences() looks like an opaque crash to the
+            // user.
+            val code = api.statusCode
+            val humanMessage = humanizeGeofenceError(code)
+            Log.w(
+                TAG,
+                "ApiException in $method: code=$code message=${api.message}",
+            )
+            result.success(
+                mapOf("added" to false, "error" to humanMessage, "code" to code),
+            )
         } catch (e: Exception) {
             Log.e(TAG, "Error in $method", e)
-            result.error("native_error", e.message, null)
+            result.success(
+                mapOf("added" to false, "error" to (e.message ?: "unknown_error")),
+            )
         }
     }
 
@@ -360,11 +390,17 @@ object GeofenceController {
         client.addGeofences(request, pendingIntent)
             .addOnSuccessListener {
                 Log.d(TAG, "Geofence added for alarmId=$alarmId")
-                // Persist the alarm metadata so that if the device
-                // reboots while the trip is in progress we can re-
-                // register the geofence, and so the ringing UI has
-                // access to label/sound/vibrate/snooze settings when
-                // the geofence fires while the app process is dead.
+                // Persist the alarm metadata so that:
+                //  1. The ringing UI has access to
+                //     label/sound/vibrate/snooze settings when the
+                //     geofence fires while the app process is dead.
+                //  2. The BootReceiver can re-register the geofence
+                //     with Play Services after a reboot. The OS
+                //     wipes geofence registrations on reboot, so
+                //     without persisting lat/lon/radius the user's
+                //     armed geofence would silently disappear and
+                //     the alarm would never fire. See
+                //     [rearmPersistedGeofences] for the consumer.
                 val data = AlarmScheduler.AlarmData(
                     alarmId = alarmId,
                     timeHour = 0,
@@ -377,16 +413,152 @@ object GeofenceController {
                     maxSnoozeCount = maxSnoozeCount,
                     currentSnoozeCount = 0,
                     triggerType = "LOCATION",
+                    latitude = latitude,
+                    longitude = longitude,
+                    radiusMeters = radiusMeters,
                 )
                 AlarmScheduler.persistAlarmData(context, data)
                 result.success(mapOf("added" to true))
             }
             .addOnFailureListener { e ->
-                Log.w(TAG, "addGeofences failed for alarmId=$alarmId", e)
+                // The Play Services Tasks failure listener always
+                // wraps the underlying cause in an `ApiException`,
+                // so the human message is almost always empty or
+                // useless ("8: "). Translate the status code into
+                // something the UI can display — without this the
+                // user just sees "Could not arm geofence" with no
+                // indication of *why* (GEOFENCE_NOT_AVAILABLE when
+                // location is off, TOO_MANY_GEOFENCES when the app
+                // already has 100 registered, etc.).
+                val (humanMessage, code) = when (e) {
+                    is com.google.android.gms.common.api.ApiException ->
+                        humanizeGeofenceError(e.statusCode) to e.statusCode
+                    else -> (e.message ?: "unknown_error") to -1
+                }
+                Log.w(
+                    TAG,
+                    "addGeofences failed for alarmId=$alarmId code=$code",
+                    e,
+                )
                 result.success(
-                    mapOf("added" to false, "error" to (e.message ?: "unknown")),
+                    mapOf("added" to false, "error" to humanMessage, "code" to code),
                 )
             }
+    }
+
+    // -------------------------------------------------------------------------
+    // Boot re-arm
+    // -------------------------------------------------------------------------
+
+    /**
+     * Re-register every persisted LOCATION-typed [AlarmScheduler.AlarmData]
+     * entry with the [com.google.android.gms.location.GeofencingClient].
+     *
+     * **Why this exists:** the OS wipes Play Services geofence
+     * registrations on reboot (`GeofencingClient` registrations are
+     * not durable across reboots). The persisted
+     * [AlarmScheduler.AlarmData] mirror in SharedPreferences
+     * survives, but the live registration does not — so without
+     * this re-arm an armed geofence alarm would silently disappear
+     * the next time the device restarts. This is the single most
+     * common cause of "my location alarm didn't fire" reports in
+     * user testing.
+     *
+     * Called from [BootReceiver] on `BOOT_COMPLETED`,
+     * `QUICKBOOT_POWERON` and `MY_PACKAGE_REPLACED`. The latter
+     * matters because app updates also wipe Play Services
+     * registrations.
+     *
+     * Failures are logged and swallowed:
+     *  * Entries missing lat/lon/radius (persisted before this
+     *    feature shipped, or corrupted) are skipped with a warning.
+     *    The user has to re-arm the alarm once in the UI.
+     *  * A failed `addGeofences` (missing Play Services, revoked
+     *    permission, out-of-range radius) is logged but does not
+     *    throw — a boot-path exception would leave the system in
+     *    a half-armed state and the user with no visible signal.
+     *  * The pending [com.google.android.gms.tasks.Task] is not
+     *    awaited (a [android.content.BroadcastReceiver] cannot
+     *    block on it anyway). The [com.google.android.gms.location.GeofencingClient]
+     *    completes the registration on its own thread; success or
+     *    failure is logged asynchronously.
+     */
+    @JvmStatic
+    fun rearmPersistedGeofences(context: Context) {
+        val all = AlarmScheduler.readAllPersisted(context)
+        val locationEntries = all.filter { it.triggerType == "LOCATION" }
+        if (locationEntries.isEmpty()) {
+            Log.d(TAG, "Rearm: no LOCATION entries to re-register")
+            return
+        }
+        var ok = 0
+        var skipped = 0
+        for (data in locationEntries) {
+            val lat = data.latitude
+            val lon = data.longitude
+            val radius = data.radiusMeters
+            if (lat == null || lon == null || radius == null) {
+                Log.w(
+                    TAG,
+                    "Rearm: skipping alarmId=${data.alarmId} — missing lat/lon/radius " +
+                        "(persisted before the rearm-on-boot feature, or corrupted entry)",
+                )
+                skipped++
+                continue
+            }
+            if (radius !in 200..20_000) {
+                Log.w(
+                    TAG,
+                    "Rearm: skipping alarmId=${data.alarmId} — radius $radius out of range",
+                )
+                skipped++
+                continue
+            }
+            try {
+                val client = LocationServices.getGeofencingClient(context)
+                val geofence = Geofence.Builder()
+                    .setRequestId(data.alarmId.toString())
+                    .setCircularRegion(lat, lon, radius.toFloat())
+                    .setExpirationDuration(-1L) // NEVER_EXPIRE
+                    .setTransitionTypes(Geofence.GEOFENCE_TRANSITION_ENTER)
+                    .build()
+                val request = GeofencingRequest.Builder()
+                    // INIT_TRIGGER_ENTER: same as addGeofence — fires
+                    // immediately if the user is already inside the
+                    // circle at re-registration time. Consistent
+                    // with first-time arming behaviour.
+                    .setInitialTrigger(GeofencingRequest.INITIAL_TRIGGER_ENTER)
+                    .addGeofence(geofence)
+                    .build()
+                val pendingIntent = buildGeofencePendingIntent(context, data.alarmId)
+                client.addGeofences(request, pendingIntent)
+                    .addOnSuccessListener {
+                        Log.d(TAG, "Rearm: geofence re-registered for alarmId=${data.alarmId}")
+                    }
+                    .addOnFailureListener { e ->
+                        Log.w(
+                            TAG,
+                            "Rearm: failed to re-register geofence for alarmId=${data.alarmId}",
+                            e,
+                        )
+                    }
+                ok++
+            } catch (se: SecurityException) {
+                // Location permission was revoked before boot
+                // completed (rare but possible). Skip — the user
+                // will see the _GeofenceHealthBanner next time they
+                // open the app.
+                Log.w(TAG, "Rearm: SecurityException for alarmId=${data.alarmId}", se)
+                skipped++
+            } catch (e: Exception) {
+                Log.w(TAG, "Rearm: unexpected error for alarmId=${data.alarmId}", e)
+                skipped++
+            }
+        }
+        Log.d(
+            TAG,
+            "Rearm: re-registered $ok/${locationEntries.size} geofence(s) (skipped $skipped)",
+        )
     }
 
     private fun removeGeofence(
@@ -468,6 +640,41 @@ object GeofenceController {
             activity.startActivity(intent)
         } catch (e: Exception) {
             Log.w(TAG, "Failed to start battery-opt Settings intent", e)
+        }
+    }
+
+    /**
+     * Translate a Play Services geofence API status code into a
+     * short, user-readable string. The raw codes are integers from
+     * `GeofenceStatusCodes` (1000-range) and `CommonStatusCodes`
+     * (0–21), and the human messages are usually empty strings.
+     * Surfacing the *cause* — not just "geofence failed" — is the
+     * single biggest usability win for this feature, because the
+     * most common cause is "Location is off" (1004) and the fix is
+     * a one-tap Settings toggle.
+     *
+     * Codes recognized:
+     *  * 1000 — `GEOFENCE_TOO_MANY_GEOFENCES` (per-app cap of 100)
+     *  * 1001 — `GEOFENCE_TOO_MANY_PENDING_INTENTS` (per-app cap)
+     *  * 1004 — `GEOFENCE_NOT_AVAILABLE` (location services off)
+     *  * 13   — `SUCCESS` (rare in failure path; defensive)
+     *  * 6    — `INTERNAL_ERROR`
+     *  * 7    — `ERROR` (generic)
+     *  * anything else — generic "Geofence setup failed (code N)".
+     */
+    private fun humanizeGeofenceError(code: Int): String {
+        return when (code) {
+            1000 -> "Too many geofences registered (max 100). Disarm an existing location alarm and try again."
+            1001 -> "Too many pending geofence intents. Restart the device and try again."
+            1004 -> "Location services are off. Turn on Location in system Settings and try again."
+            1005 -> "Geofence is no longer available. Update Google Play Services and try again."
+            com.google.android.gms.common.api.CommonStatusCodes.SUCCESS ->
+                "Unknown geofence error"
+            com.google.android.gms.common.api.CommonStatusCodes.INTERNAL_ERROR ->
+                "Internal error. Try again."
+            com.google.android.gms.common.api.CommonStatusCodes.ERROR ->
+                "Geofence setup failed. Try again."
+            else -> "Geofence setup failed (code $code)"
         }
     }
 

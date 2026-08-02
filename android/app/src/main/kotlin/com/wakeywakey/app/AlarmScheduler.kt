@@ -64,6 +64,13 @@ object AlarmScheduler {
      *  - `"TIME"` (default) — a wall-clock alarm.
      *  - `"TIMER"` — a countdown timer (Iteration 3), which uses
      *    the same native pipeline but with different UI labelling.
+     *  - `"LOCATION"` — a geofence-armed alarm. [latitude],
+     *    [longitude] and [radiusMeters] must be non-null and are
+     *    used by the [BootReceiver] to re-register the geofence
+     *    with Play Services after a reboot (the OS wipes
+     *    geofence registrations on reboot, so without this
+     *    the user's armed geofence alarm would silently
+     *    disappear).
      */
     data class AlarmData(
         val alarmId: Int,
@@ -109,12 +116,32 @@ object AlarmScheduler {
         val isSnoozeFire: Boolean = false,
         /**
          * `"TIME"` for a wall-clock alarm (default), `"TIMER"` for
-         * a countdown timer. Used by the ringing UI to vary the
-         * title/subtitle — see [RingingActivity]. Persisted with
-         * the alarm data so the BootReceiver can re-arm the right
-         * kind of schedule.
+         * a countdown timer, `"LOCATION"` for a geofence-armed
+         * alarm. Used by the ringing UI to vary the title/subtitle
+         * (see [RingingActivity]) and by [BootReceiver] to decide
+         * which kind of item to re-register after a reboot.
+         * Persisted with the alarm data.
          */
         val triggerType: String = "TIME",
+        /**
+         * Latitude of the geofence center. Only set for entries
+         * with [triggerType] = `"LOCATION"`. `null` for time
+         * alarms and timers. Persisted so [BootReceiver] can
+         * re-register the geofence with Play Services on reboot.
+         */
+        val latitude: Double? = null,
+        /**
+         * Longitude of the geofence center. See [latitude] for
+         * semantics.
+         */
+        val longitude: Double? = null,
+        /**
+         * Radius of the geofence in meters (200 m – 20 km). Only
+         * set for entries with [triggerType] = `"LOCATION"`. `null`
+         * for time alarms and timers. Persisted so [BootReceiver]
+         * can re-register the geofence on reboot.
+         */
+        val radiusMeters: Int? = null,
     ) {
         val isRepeating: Boolean
             get() = !repeatDays.isNullOrBlank()
@@ -402,6 +429,17 @@ object AlarmScheduler {
         put("maxSnoozeCount", d.maxSnoozeCount)
         put("currentSnoozeCount", d.currentSnoozeCount)
         put("triggerType", d.triggerType)
+        // Persist the geofence coordinates so the BootReceiver
+        // can re-register the geofence with Play Services after a
+        // reboot. The OS wipes geofence registrations on reboot,
+        // so without this the user's armed geofence alarm would
+        // silently disappear until the user manually re-armed it.
+        // `isNull` (not absence) is used so that a TIME entry
+        // round-trips with `latitude = null` rather than `null`
+        // collapsing the key entirely.
+        put("latitude", d.latitude)
+        put("longitude", d.longitude)
+        put("radiusMeters", d.radiusMeters)
     }
 
     private fun fromJson(o: JSONObject): AlarmData = AlarmData(
@@ -421,5 +459,13 @@ object AlarmScheduler {
         // was added are still treated as wall-clock alarms by the
         // ringing UI.
         triggerType = o.optString("triggerType", "TIME"),
+        // Latitude/longitude/radiusMeters are absent for entries
+        // persisted before the geofence-rearm-on-boot feature
+        // (or for time-based entries by definition). `isNull`
+        // distinguishes "explicitly null" from "field missing";
+        // a missing field falls back to null here.
+        latitude = if (o.has("latitude") && !o.isNull("latitude")) o.getDouble("latitude") else null,
+        longitude = if (o.has("longitude") && !o.isNull("longitude")) o.getDouble("longitude") else null,
+        radiusMeters = if (o.has("radiusMeters") && !o.isNull("radiusMeters")) o.getInt("radiusMeters") else null,
     )
 }

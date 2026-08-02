@@ -92,13 +92,13 @@ void main() {
         return null;
       });
       final bridge = GeofenceBridge();
-      final ok = await bridge.addGeofence(
+      final result = await bridge.addGeofence(
         alarmId: 7,
         latitude: 51.5074,
         longitude: -0.1278,
         radiusMeters: 2000,
       );
-      expect(ok, isTrue);
+      expect(result.ok, isTrue);
       expect(captured, isNotNull);
       // ignore: null_check_on_nullable_type_parameter
       final payload = captured!;
@@ -110,23 +110,45 @@ void main() {
       expect(payload['expirationMillis'], -1);
     });
 
-    test('addGeofence reports added=false on failure', () async {
+    test('addGeofence reports a humanized error on failure', () async {
       messenger.setMockMethodCallHandler(channel, (call) async {
         if (call.method == 'addGeofence') {
-          return <String, Object?>{'added': false, 'error': 'denied'};
+          return <String, Object?>{
+            'added': false,
+            'error': 'Location services are off. Turn on Location in system Settings.',
+            'code': 1004,
+          };
         }
         return null;
       });
       final bridge = GeofenceBridge();
-      expect(
-        await bridge.addGeofence(
-          alarmId: 1,
-          latitude: 0,
-          longitude: 0,
-          radiusMeters: 500,
-        ),
-        isFalse,
+      final result = await bridge.addGeofence(
+        alarmId: 1,
+        latitude: 0,
+        longitude: 0,
+        radiusMeters: 500,
       );
+      expect(result.ok, isFalse);
+      expect(result.error, contains('Location services are off'));
+      expect(result.code, 1004);
+    });
+
+    test('addGeofence converts a PlatformException into a GeofenceResult', () async {
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'addGeofence') {
+          throw PlatformException(code: 'native_error', message: 'channel gone');
+        }
+        return null;
+      });
+      final bridge = GeofenceBridge();
+      final result = await bridge.addGeofence(
+        alarmId: 1,
+        latitude: 0,
+        longitude: 0,
+        radiusMeters: 500,
+      );
+      expect(result.ok, isFalse);
+      expect(result.error, 'channel gone');
     });
 
     test('removeGeofence reports removed=true on success', () async {
@@ -137,7 +159,21 @@ void main() {
         return null;
       });
       final bridge = GeofenceBridge();
-      expect(await bridge.removeGeofence(7), isTrue);
+      final result = await bridge.removeGeofence(7);
+      expect(result.ok, isTrue);
+    });
+
+    test('removeGeofence reports failure with error string', () async {
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'removeGeofence') {
+          return <String, Object?>{'removed': false, 'error': 'not_found'};
+        }
+        return null;
+      });
+      final bridge = GeofenceBridge();
+      final result = await bridge.removeGeofence(7);
+      expect(result.ok, isFalse);
+      expect(result.error, 'not_found');
     });
 
     test('isBatteryOptimizationExempt forwards the boolean', () async {

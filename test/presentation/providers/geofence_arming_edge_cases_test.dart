@@ -49,7 +49,7 @@ class _FakeGeofenceBridge extends GeofenceBridge {
   }) async => currentLocation;
 
   @override
-  Future<bool> addGeofence({
+  Future<GeofenceResult> addGeofence({
     required int alarmId,
     required double latitude,
     required double longitude,
@@ -67,7 +67,9 @@ class _FakeGeofenceBridge extends GeofenceBridge {
       'longitude': longitude,
       'radiusMeters': radiusMeters,
     });
-    return addResult;
+    return addResult
+        ? const GeofenceResult.ok()
+        : const GeofenceResult.failed(error: 'simulated failure');
   }
 }
 

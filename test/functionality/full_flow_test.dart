@@ -76,7 +76,7 @@ class _FakeGeofenceBridge extends GeofenceBridge {
   }) async => currentLocation;
 
   @override
-  Future<bool> addGeofence({
+  Future<GeofenceResult> addGeofence({
     required int alarmId,
     required double latitude,
     required double longitude,
@@ -99,13 +99,17 @@ class _FakeGeofenceBridge extends GeofenceBridge {
       'snoozeDurationMin': snoozeDurationMin,
       'maxSnoozeCount': maxSnoozeCount,
     });
-    return addResult;
+    return addResult
+        ? const GeofenceResult.ok()
+        : const GeofenceResult.failed(error: 'simulated failure');
   }
 
   @override
-  Future<bool> removeGeofence(int alarmId) async {
+  Future<GeofenceResult> removeGeofence(int alarmId) async {
     removeCalls.add(alarmId);
-    return removeResult;
+    return removeResult
+        ? const GeofenceResult.ok()
+        : const GeofenceResult.failed(error: 'simulated remove failure');
   }
 }
 

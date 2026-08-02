@@ -447,9 +447,21 @@ class _AlarmListTile extends ConsumerWidget {
         // us here. Treat it as a no-op success.
         break;
       case ArmingOutcome.registrationFailed:
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('Could not arm geofence')));
+        // Show the human-readable detail from the native side when
+        // available (e.g. "Location services are off…", "Too many
+        // geofences…"). Fall back to a generic message for
+        // defensive cases where the bridge returned no detail.
+        final detail = result.message;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              detail != null && detail.isNotEmpty
+                  ? 'Could not arm geofence: $detail'
+                  : 'Could not arm geofence',
+            ),
+            duration: const Duration(seconds: 5),
+          ),
+        );
       case ArmingOutcome.permissionMissing:
         // Walk the user through the permission flow.
         final bridge = ref.read(geofenceBridgeProvider);
