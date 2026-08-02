@@ -39,7 +39,24 @@ class AlarmService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP_ALARM) {
+        // Guard against a null intent. The OS may re-deliver a null
+        // intent to the service if the process is killed and
+        // restarted under memory pressure (START_STICKY semantics
+        // we previously used) or, with START_REDELIVER_INTENT, if
+        // there are no pending start commands to redeliver. Either
+        // way, a null intent carries no alarm metadata, so falling
+        // through to the "start ringing" branch would re-fire the
+        // ringtone with `alarmId = -1` and a default label — i.e.
+        // a phantom alarm that is impossible for the user to
+        // identify or dismiss properly. Stop the service instead.
+        if (intent == null) {
+            Log.w(TAG, "Service restarted with null intent; stopping (would otherwise phantom-ring)")
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        if (intent.action == ACTION_STOP_ALARM) {
             Log.d(TAG, "Received STOP_ALARM – stopping service")
             stopRingtone()
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -47,14 +64,14 @@ class AlarmService : Service() {
             return START_NOT_STICKY
         }
 
-        val alarmId = intent?.getIntExtra(AlarmReceiver.EXTRA_ALARM_ID, -1) ?: -1
-        val label = intent?.getStringExtra(AlarmReceiver.EXTRA_LABEL) ?: "Alarm"
-        val soundUri = intent?.getStringExtra(AlarmReceiver.EXTRA_SOUND_URI) ?: ""
-        val vibrate = intent?.getBooleanExtra(AlarmReceiver.EXTRA_VIBRATE, true) ?: true
+        val alarmId = intent.getIntExtra(AlarmReceiver.EXTRA_ALARM_ID, -1)
+        val label = intent.getStringExtra(AlarmReceiver.EXTRA_LABEL) ?: "Alarm"
+        val soundUri = intent.getStringExtra(AlarmReceiver.EXTRA_SOUND_URI) ?: ""
+        val vibrate = intent.getBooleanExtra(AlarmReceiver.EXTRA_VIBRATE, true)
         val snoozeDurationMin =
-            intent?.getIntExtra(AlarmReceiver.EXTRA_SNOOZE_DURATION_MIN, 10) ?: 10
-        val maxSnoozeCount = intent?.getIntExtra(AlarmReceiver.EXTRA_MAX_SNOOZE_COUNT, -1) ?: -1
-        val triggerType = intent?.getStringExtra(AlarmReceiver.EXTRA_TRIGGER_TYPE) ?: "TIME"
+            intent.getIntExtra(AlarmReceiver.EXTRA_SNOOZE_DURATION_MIN, 10)
+        val maxSnoozeCount = intent.getIntExtra(AlarmReceiver.EXTRA_MAX_SNOOZE_COUNT, -1)
+        val triggerType = intent.getStringExtra(AlarmReceiver.EXTRA_TRIGGER_TYPE) ?: "TIME"
 
         Log.d(
             TAG,
@@ -85,7 +102,13 @@ class AlarmService : Service() {
         playRingtone(soundUri)
         if (vibrate) startVibration()
 
-        return START_STICKY
+        // START_REDELIVER_INTENT: if the OS kills the FGS mid-ring
+        // (low-memory kill, Doze-induced restart, etc.) it will
+        // re-deliver the original intent and the ringtone will
+        // resume with the same alarmId and metadata. (START_STICKY
+        // would re-deliver a null intent, which the guard at the
+        // top of this method now rejects.)
+        return START_REDELIVER_INTENT
     }
 
     override fun onDestroy() {
