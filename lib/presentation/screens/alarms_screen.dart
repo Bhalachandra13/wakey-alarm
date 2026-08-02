@@ -4,8 +4,10 @@ import 'package:wakey_alarm/domain/alarm.dart';
 import 'package:wakey_alarm/native_bridge/geofence_bridge.dart';
 import 'package:wakey_alarm/presentation/providers/alarms_provider.dart';
 import 'package:wakey_alarm/presentation/providers/geofence_arming_controller.dart';
+import 'package:wakey_alarm/presentation/providers/favourite_locations_provider.dart';
 import 'package:wakey_alarm/presentation/screens/background_location_explanation_screen.dart';
 import 'package:wakey_alarm/presentation/screens/edit_alarm_screen.dart';
+import 'package:wakey_alarm/presentation/screens/favourites_screen.dart';
 import 'package:wakey_alarm/presentation/widgets/exact_alarm_banner.dart';
 import 'package:wakey_alarm/presentation/widgets/notification_permission_banner.dart';
 
@@ -44,6 +46,7 @@ class AlarmsScreen extends ConsumerWidget {
         const NotificationPermissionBanner(),
         const ExactAlarmPermissionBanner(),
         const _GeofenceHealthBanner(),
+        const _SavedPlacesRow(),
         Expanded(
           child: alarmsAsyncValue.when(
             loading: () => const Center(child: CircularProgressIndicator()),
@@ -472,5 +475,57 @@ class _AlarmListTile extends ConsumerWidget {
           const SnackBar(content: Text('Alarm configuration is invalid')),
         );
     }
+  }
+}
+
+/// Compact entry point to the [FavouritesScreen] shown above the
+/// alarm list. Acts as both navigation and a discoverability
+/// signal — the user sees "Saved places · N" on the alarms tab
+/// and learns that frequent places can be reused for geofence
+/// alarms without having to re-pick them every time.
+///
+/// The row is intentionally thin (a single InkWell, no card) so
+/// it doesn't compete with the permission banners above it or
+/// the alarm list below. The bookmark icon + chevron make the
+/// affordance obvious; the count is the "social proof" that
+/// the feature is in use (and a quick way to check whether any
+/// favourites exist without opening the screen).
+class _SavedPlacesRow extends ConsumerWidget {
+  const _SavedPlacesRow();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final favourites = ref.watch(favouriteLocationsProvider).value ?? const [];
+    final count = favourites.length;
+    final theme = Theme.of(context);
+    return Material(
+      key: const Key('savedPlacesRow'),
+      color: theme.colorScheme.surface,
+      child: InkWell(
+        onTap: () => FavouritesScreen.show(context),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+          child: Row(
+            children: [
+              Icon(Icons.bookmark_outline, color: theme.colorScheme.primary),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text('Saved places', style: theme.textTheme.titleSmall),
+              ),
+              if (count > 0) ...[
+                Text(
+                  '$count',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(width: 4),
+              ],
+              const Icon(Icons.chevron_right, size: 20),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }

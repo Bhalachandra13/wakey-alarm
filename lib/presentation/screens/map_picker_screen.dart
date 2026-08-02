@@ -4,9 +4,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:wakey_alarm/data/location_search_service.dart';
+import 'package:wakey_alarm/domain/favourite_location.dart';
 import 'package:wakey_alarm/domain/geofence_validator.dart';
 import 'package:wakey_alarm/native_bridge/geofence_bridge.dart';
 import 'package:wakey_alarm/presentation/providers/alarms_provider.dart';
+import 'package:wakey_alarm/presentation/providers/favourite_locations_provider.dart';
+import 'package:wakey_alarm/presentation/screens/favourites_screen.dart';
 
 /// Map-based location picker for creating a geofence alarm.
 ///
@@ -110,10 +113,7 @@ class _MapPickerScreenState extends ConsumerState<MapPickerScreen> {
       );
       if (here != null && mounted) {
         await controller.animateCamera(
-          CameraUpdate.newLatLngZoom(
-            LatLng(here.latitude, here.longitude),
-            14,
-          ),
+          CameraUpdate.newLatLngZoom(LatLng(here.latitude, here.longitude), 14),
         );
       }
     } on Object {
@@ -249,10 +249,38 @@ class _MapPickerScreenState extends ConsumerState<MapPickerScreen> {
     _searchFocus.unfocus();
     final controller = _mapController;
     if (controller != null) {
-      await controller.animateCamera(
-        CameraUpdate.newLatLngZoom(latLng, 14),
-      );
+      await controller.animateCamera(CameraUpdate.newLatLngZoom(latLng, 14));
     }
+  }
+
+  /// Adopts a saved [FavouriteLocation] as the picked location.
+  /// Same UX as [_selectSearchResult] — drops the pin, flies the
+  /// camera, dismisses the suggestions, clears the search — but
+  /// also adopts the favourite's stored default radius so the
+  /// user doesn't have to re-set it.
+  Future<void> _selectFavourite(FavouriteLocation fav) async {
+    final latLng = LatLng(fav.latitude, fav.longitude);
+    setState(() {
+      _pin = latLng;
+      _radiusMeters = fav.radiusMeters;
+      _searchResults = const [];
+      _searchError = null;
+      _isSearching = false;
+    });
+    _searchController.clear();
+    _searchFocus.unfocus();
+    final controller = _mapController;
+    if (controller != null) {
+      await controller.animateCamera(CameraUpdate.newLatLngZoom(latLng, 14));
+    }
+  }
+
+  /// Open the Favourites screen so the user can add or manage
+  /// saved places. Pushed as a full route (not a modal sheet) so
+  /// the back gesture returns to the picker and the in-progress
+  /// pin is preserved.
+  Future<void> _openFavourites() async {
+    await FavouritesScreen.show(context);
   }
 
   @override
@@ -334,6 +362,10 @@ class _MapPickerScreenState extends ConsumerState<MapPickerScreen> {
                 ),
                 // Search bar + suggestions overlay, pinned to the
                 // top of the map so it stays visible while panning.
+                // The quick-pick favourite chip strip lives inside
+                // the same card (below the suggestions) so the two
+                // pick-a-place affordances share one floating
+                // panel and never overlap each other.
                 Positioned(
                   left: 12,
                   right: 12,
@@ -349,6 +381,8 @@ class _MapPickerScreenState extends ConsumerState<MapPickerScreen> {
                     onSubmitted: _onSearchSubmitted,
                     onClear: _clearSearch,
                     onSelectResult: _selectSearchResult,
+                    onSelectFavourite: _selectFavourite,
+                    onManageFavourites: _openFavourites,
                   ),
                 ),
                 // Floating hint over the map.
@@ -423,10 +457,13 @@ class _MapPickerScreenState extends ConsumerState<MapPickerScreen> {
   }
 }
 
-/// The search field + suggestions overlay. Kept as its own widget
-/// so [_MapPickerScreenState.build] stays readable — there's a lot
-/// going on with the keyboard, results, and error states.
-class _SearchPanel extends StatelessWidget {
+/// The search field + suggestions overlay + quick-pick favourite
+/// chip strip, all in one floating card. Kept as its own widget
+/// (now a [ConsumerWidget] so it can read the favourites list
+/// directly) so [_MapPickerScreenState.build] stays readable —
+/// there's a lot going on with the keyboard, results, error
+/// states, and the saved-places affordance.
+class _SearchPanel extends ConsumerWidget {
   const _SearchPanel({
     required this.controller,
     required this.focusNode,
@@ -438,6 +475,8 @@ class _SearchPanel extends StatelessWidget {
     required this.onSubmitted,
     required this.onClear,
     required this.onSelectResult,
+    required this.onSelectFavourite,
+    required this.onManageFavourites,
   });
 
   final TextEditingController controller;
@@ -450,14 +489,18 @@ class _SearchPanel extends StatelessWidget {
   final ValueChanged<String> onSubmitted;
   final VoidCallback onClear;
   final ValueChanged<LocationSearchResult> onSelectResult;
+  final ValueChanged<FavouriteLocation> onSelectFavourite;
+  final VoidCallback onManageFavourites;
 
   bool get _hasContent => controller.text.isNotEmpty;
   bool get _showSuggestions =>
       results.isNotEmpty || (errorMessage != null && !isSearching);
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+    final favouritesAsync = ref.watch(favouriteLocationsProvider);
+    final favourites = favouritesAsync.value ?? const <FavouriteLocation>[];
     return Material(
       // The panel needs a solid background so map tiles behind it
       // don't bleed through the rounded corners.
@@ -472,10 +515,7 @@ class _SearchPanel extends StatelessWidget {
             child: Row(
               children: [
                 const SizedBox(width: 8),
-                Icon(
-                  Icons.search,
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
+                Icon(Icons.search, color: theme.colorScheme.onSurfaceVariant),
                 Expanded(
                   child: TextField(
                     key: const Key('mapPickerSearchField'),
@@ -522,6 +562,86 @@ class _SearchPanel extends StatelessWidget {
                 onSelect: (r) => onSelectResult(r),
               ),
             ),
+          // Quick-pick favourite chips (or the empty-state nudge
+          // when no favourites exist yet). Always visible at the
+          // bottom of the card so the user has a one-tap path to
+          // their common places whenever the picker is open.
+          if (favourites.isNotEmpty)
+            _FavouriteChips(favourites: favourites, onSelect: onSelectFavourite)
+          else
+            _EmptyFavouritesHint(onTap: onManageFavourites),
+        ],
+      ),
+    );
+  }
+}
+
+/// Horizontal strip of saved-place chips. Tapping a chip drops
+/// the pin at the favourite's location and adopts its default
+/// radius — the core "two taps to set up a geofence" affordance.
+class _FavouriteChips extends StatelessWidget {
+  const _FavouriteChips({required this.favourites, required this.onSelect});
+
+  final List<FavouriteLocation> favourites;
+  final ValueChanged<FavouriteLocation> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      key: const Key('mapPickerFavouriteChips'),
+      height: 48,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+        itemCount: favourites.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (context, i) {
+          final f = favourites[i];
+          return Center(
+            child: ActionChip(
+              key: Key('mapPickerFavouriteChip_$i'),
+              avatar: Icon(f.icon.iconData, size: 18),
+              label: Text(f.name),
+              onPressed: () => onSelect(f),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// Inline nudge shown in the chip strip area when the user has
+/// no saved places yet. One tap takes them to the Favourites
+/// screen where the empty-state "Add Home / Add Work" buttons
+/// are the guided on-ramp.
+class _EmptyFavouritesHint extends StatelessWidget {
+  const _EmptyFavouritesHint({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      key: const Key('mapPickerFavouritesEmptyHint'),
+      padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+      child: Row(
+        children: [
+          const SizedBox(width: 8),
+          Icon(
+            Icons.bookmark_add_outlined,
+            size: 18,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+          const SizedBox(width: 4),
+          Expanded(
+            child: Text(
+              'Tip: save frequent places for one-tap picking',
+              style: Theme.of(context).textTheme.bodySmall,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          TextButton(onPressed: onTap, child: const Text('Manage')),
         ],
       ),
     );

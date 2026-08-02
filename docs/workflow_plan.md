@@ -14,8 +14,9 @@ satisfied, not just "looks done in the emulator."
 | 2 | Stopwatch | ✅ Done (`9fd317b`) | ✅ Done | ⏳ Pending on-device verification |
 | 3 | Timer | ✅ Done (`3a33da6`) | ✅ Done | ⏳ Pending on-device verification |
 | 4 | Geofencing | ✅ Done (`53bc240`) | ✅ Done | ⏳ Pending on-device verification |
+| 5 | Favourites + Permission UX | ✅ Done | ✅ Done (325 tests) | ⏳ Pending on-device verification |
 
-All four feature iterations are code-complete. All 183 automated
+All five feature iterations are code-complete. All 325 automated
 tests pass (`flutter test`); `dart analyze` is clean; `dart format` is
 clean. Only the on-device manual DoD checks remain — those require a
 physical Android device (or emulator with the right permissions
@@ -405,6 +406,136 @@ established in Iteration 0 are extended here for location).
       verification.**
 
 ---
+
+## Iteration 5 — Favourite Locations + Permission UX
+
+*Scope addition beyond `requirements.md` §5 (favourites aren't in the
+original spec) — added in response to the feedback that "setting up a
+geofence alarm is the headline use case, and it should be the easiest
+thing in the app to do." Two related halves: make it cheap to reuse a
+location the user has already picked (favourites), and stop making
+the user assemble three separate permission prompts in three separate
+places (unified setup wizard + consolidated health banner).*
+
+### Tasks
+
+- [x] Add a `favourite_locations` sqflite table (v2→v3 migration).
+      Schema: `id`, `name`, `icon_code`, `latitude`, `longitude`,
+      `radius_meters`, `created_at`, `updated_at`. Lives alongside
+      `alarms` rather than as a column on `alarms` because a
+      single favourite is reused across many alarms — "Home"
+      doesn't disappear when the alarm that first used it is
+      deleted, and renaming "Home" → "Apartment" updates every
+      alarm that points at it without a per-alarm rewrite.
+- [x] `FavouriteLocation` domain model with a tiny icon enum
+      (`home`, `work`, `school`, `favorite`, `place`) that maps
+      common names to a sensible default and falls back to
+      `place` for unknown names. Stable string `code` persisted
+      in the DB so the column survives across app upgrades even
+      if Material renames a glyph.
+- [x] `FavouriteLocationDao` (insert / read / getAll / update /
+      delete / deleteAll / count) — `getAll` sorts by
+      `created_at ASC` so the user's mental order is preserved.
+- [x] Riverpod `FavouriteLocationsNotifier` (AsyncNotifier) with
+      `add` (auto-picks icon from name), `edit` (rename/icon/
+      radius), `move` (lat/lon/radius), `delete`. Plus a
+      `hasFavouritesProvider` derived flag.
+- [x] `FavouritesScreen` (manage): list with delete (confirm
+      dialog), tap-to-edit (reopens map picker pre-filled), +
+      in the app bar to add. Empty-state shows one-tap
+      **Add Home** / **Add Work** affordances plus an
+      **Add a custom place** escape hatch. New place flow:
+      map picker → name dialog (default "Home"/"Work" from the
+      entry point) → save.
+- [x] Quick-pick chip strip in `MapPickerScreen`. When the user
+      has saved favourites, a horizontal row of ActionChips
+      (icon + name) appears at the bottom of the search panel.
+      Tapping a chip drops the pin, flies the camera, and
+      adopts the favourite's default radius — the "two taps to
+      set up a geofence" affordance. When no favourites exist
+      yet, an inline "Tip: save frequent places for one-tap
+      picking" nudge with a "Manage" link replaces the strip.
+- [x] Entry point on the alarms screen: a compact
+      `_SavedPlacesRow` above the alarm list (bookmark icon +
+      "Saved places" + count + chevron) pushes `FavouritesScreen`.
+- [x] `EditAlarmScreen` location section: the existing "Pick on
+      map" button now opens the picker with the chip strip
+      visible, so the user can pick a favourite without an
+      extra navigation hop.
+- [x] Tests: DAO CRUD + icon mapping (15), provider add/edit/
+      move/delete/hasFavourites (7), `FavouritesScreen` empty
+      state + populated list + add flow (6), map picker chip
+      strip + empty nudge + tapping a chip drops the pin with
+      the favourite's radius (3). All 31 new tests pass;
+      `flutter analyze` clean.
+- [ ] **Deferred to a future iteration** — geofence-aware
+      "Save this pin as Home" action inside the map picker
+      (currently the user adds favourites via the Favourites
+      screen's + / Add Home / Add Work). Not blocking: the
+      current path is two taps (open Favourites → Add Home →
+      pick on map) and is the guided on-ramp for first-time
+      users anyway.
+
+### Permissions UX (planned for the same iteration, not yet shipped)
+
+- [ ] Unified "Get ready" setup screen (`PermissionsSetupScreen`).
+      One screen, plain language, one primary "Set up" button
+      that walks the user through notif → exact alarm →
+      foreground location → background explanation → background
+      in a single coherent flow. Triggered on first run and
+      any time the user taps "Fix" on the consolidated banner.
+- [ ] Replace the three separate banners on `alarms_screen`
+      (`NotificationPermissionBanner`, `ExactAlarmPermissionBanner`,
+      `_GeofenceHealthBanner`) with a single
+      `_PermissionsHealthBanner` that lists every missing item
+      in one card with one "Fix" button → opens the setup
+      screen. The setup screen covers all three cases, so the
+      consolidation is behaviour-preserving.
+- [ ] Tests for the setup screen (mocked bridges) and the
+      consolidated banner.
+
+### Dependencies
+
+Requires Iterations 0–4 (DB schema, sqflite migrations, Riverpod,
+permission flow patterns, map picker, geofence bridge).
+
+### Definition of Done
+
+- [x] **Automated:** DAO + provider + widget tests pass
+      (`test/data/favourite_location_dao_test.dart`,
+      `test/presentation/providers/favourite_locations_provider_test.dart`,
+      `test/presentation/screens/favourites_screen_test.dart`,
+      updated `test/presentation/screens/map_picker_screen_test.dart`).
+      325 tests pass overall.
+- [x] **Automated:** `flutter analyze` clean.
+- [ ] **Automated:** Permission setup screen + consolidated
+      banner (pending the permissions-UX follow-up commit in
+      this same iteration).
+- [ ] **Manual (on-device):** From a fresh install, tap "Get
+      ready" and confirm the single flow covers notif / exact
+      alarm / foreground / background without three separate
+      prompts. **Pending human verification.**
+- [ ] **Manual (on-device):** Open a geofence alarm, tap "Pick
+      on map", confirm the chip strip shows saved favourites
+      and tapping one drops the pin + flies the camera with
+      the correct radius. **Pending human verification.**
+- [ ] **Manual (on-device):** First-time Favourites empty state
+      shows Add Home / Add Work; tapping Add Home opens the
+      map picker and the resulting favourite shows up in the
+      chip strip on the next picker open. **Pending human
+      verification.**
+
+### Scope note
+
+`requirements.md` does not mention favourite locations. This
+iteration is an explicit addition agreed with the user after
+on-device testing showed that the headline geofence use case
+("alarm me near home / near my stop") required a map + search
+on every alarm creation. The favourites feature is the
+minimum delta that makes the common case 2 taps. The
+permission UX consolidation is the matching half: the previous
+three-banner / three-prompt flow was the second-largest
+source of setup friction in user testing.
 
 ## General Notes for Every Iteration
 

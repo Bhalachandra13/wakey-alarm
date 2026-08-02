@@ -6,7 +6,7 @@ class WakeyDatabase {
     : _databaseFactory = databaseFactory ?? sqflite.databaseFactory;
 
   static const databaseName = 'wakey_wakey.db';
-  static const databaseVersion = 2;
+  static const databaseVersion = 3;
 
   final sqflite.DatabaseFactory _databaseFactory;
   final String? databasePath;
@@ -74,6 +74,26 @@ class WakeyDatabase {
         snooze_duration_min INTEGER NOT NULL DEFAULT 5
       )
     ''');
+
+    // Favourite locations — saved places (e.g. "Home", "Work") the
+    // user can quickly pick as the geofence center when creating a
+    // location alarm. See Iteration 5 (favourites) in
+    // `workflow_plan.md`. Lives alongside `alarms` rather than as a
+    // column on `alarms` because a single favourite is reused
+    // across many alarms and the user's "Home" doesn't disappear
+    // when the alarm referencing it is deleted.
+    await db.execute('''
+      CREATE TABLE favourite_locations (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        icon_code TEXT NOT NULL,
+        latitude REAL NOT NULL,
+        longitude REAL NOT NULL,
+        radius_meters INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    ''');
   }
 
   static Future<void> _migrateSchema(
@@ -93,6 +113,25 @@ class WakeyDatabase {
             'ALTER TABLE timers ADD COLUMN snooze_duration_min '
             'INTEGER NOT NULL DEFAULT 5',
           );
+          break;
+        case 3:
+          // v2 → v3: add `favourite_locations` table (Iteration 5).
+          // No data migration is needed — the table is brand new and
+          // starts empty. The user can populate it from the
+          // map picker's "Save pin as favourite" action or the
+          // Favourites screen.
+          await db.execute('''
+            CREATE TABLE favourite_locations (
+              id INTEGER PRIMARY KEY,
+              name TEXT NOT NULL,
+              icon_code TEXT NOT NULL,
+              latitude REAL NOT NULL,
+              longitude REAL NOT NULL,
+              radius_meters INTEGER NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            )
+          ''');
           break;
         default:
           throw UnsupportedError('No migration registered for v$version');
