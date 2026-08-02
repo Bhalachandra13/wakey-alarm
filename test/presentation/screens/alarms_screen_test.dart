@@ -3,14 +3,25 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wakey_alarm/domain/alarm.dart';
 import 'package:wakey_alarm/native_bridge/alarm_bridge.dart';
 import 'package:wakey_alarm/native_bridge/geofence_bridge.dart';
 import 'package:wakey_alarm/native_bridge/permission_bridge.dart';
 import 'package:wakey_alarm/presentation/providers/alarms_provider.dart';
 import 'package:wakey_alarm/presentation/screens/alarms_screen.dart';
+import 'package:wakey_alarm/presentation/screens/permissions_setup_screen.dart';
 
 void main() {
+  // Suppress the permissions-setup first-run auto-push so the
+  // existing tests don't get the setup wizard stacked on top of
+  // the alarms screen (which would make find-by-text assertions
+  // ambiguous). The setup screen has its own dedicated test
+  // file that exercises the auto-push behaviour.
+  setUpAll(() {
+    SharedPreferences.setMockInitialValues({permissionsSetupShownKey: true});
+  });
+
   group('AlarmsScreen widgets', () {
     Alarm createTestAlarm({
       String label = 'Test Alarm',
@@ -294,54 +305,61 @@ void main() {
       expect(find.text('Armed • 500 m radius'), findsOneWidget);
     });
 
-    testWidgets('shows geofence health banner when armed location alarm lacks permission', (
-      tester,
-    ) async {
-      final fakeBridge = _FakeAlarmBridge();
-      addTearDown(fakeBridge.eventController.close);
-      final alarm = Alarm(
-        id: 1,
-        label: 'Train stop',
-        triggerType: AlarmTriggerType.location,
-        latitude: 51.5074,
-        longitude: -0.1278,
-        radiusMeters: 500,
-        isEnabled: true,
-        isArmed: true,
-        soundUri: '',
-        vibrate: false,
-        snoozeDurationMin: 10,
-        createdAt: '2026-07-20T10:00:00Z',
-        updatedAt: '2026-07-20T10:00:00Z',
-      );
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            alarmBridgeProvider.overrideWithValue(fakeBridge),
-            permissionBridgeProvider.overrideWithValue(_FakePermissionBridge()),
-            alarmEventsProvider.overrideWith(
-              (ref) => fakeBridge.eventController.stream,
-            ),
-            alarmsNotifierProvider.overrideWith(
-              () => _StubAlarmsNotifier([alarm]),
-            ),
-            geofenceBridgeProvider.overrideWithValue(
-              _FakeGeofenceBridge(
-                permissionStatus: LocationPermissionStatus.denied,
+    testWidgets(
+      'shows the consolidated permissions banner when an armed location alarm lacks background location',
+      (tester) async {
+        final fakeBridge = _FakeAlarmBridge();
+        addTearDown(fakeBridge.eventController.close);
+        final alarm = Alarm(
+          id: 1,
+          label: 'Train stop',
+          triggerType: AlarmTriggerType.location,
+          latitude: 51.5074,
+          longitude: -0.1278,
+          radiusMeters: 500,
+          isEnabled: true,
+          isArmed: true,
+          soundUri: '',
+          vibrate: false,
+          snoozeDurationMin: 10,
+          createdAt: '2026-07-20T10:00:00Z',
+          updatedAt: '2026-07-20T10:00:00Z',
+        );
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              alarmBridgeProvider.overrideWithValue(fakeBridge),
+              permissionBridgeProvider.overrideWithValue(
+                _FakePermissionBridge(),
               ),
-            ),
-          ],
-          child: const MaterialApp(home: Scaffold(body: AlarmsScreen())),
-        ),
-      );
-      await tester.pumpAndSettle();
+              alarmEventsProvider.overrideWith(
+                (ref) => fakeBridge.eventController.stream,
+              ),
+              alarmsNotifierProvider.overrideWith(
+                () => _StubAlarmsNotifier([alarm]),
+              ),
+              geofenceBridgeProvider.overrideWithValue(
+                _FakeGeofenceBridge(
+                  permissionStatus: LocationPermissionStatus.denied,
+                ),
+              ),
+            ],
+            child: const MaterialApp(home: Scaffold(body: AlarmsScreen())),
+          ),
+        );
+        await tester.pumpAndSettle();
 
-      expect(
-        find.textContaining('Background location'),
-        findsOneWidget,
-        reason: 'Geofence health banner should prompt for background location',
-      );
-    });
+        // The consolidated banner surfaces the missing
+        // "Background location" item and a Fix action.
+        expect(
+          find.textContaining('Background location'),
+          findsOneWidget,
+          reason:
+              'Consolidated banner should list Background location as missing',
+        );
+        expect(find.text('Fix'), findsOneWidget);
+      },
+    );
   });
 
   group('AlarmsScreen with provider overrides', () {
@@ -446,13 +464,15 @@ class _StubAlarmsNotifier extends AlarmsNotifier {
 
 class _FakeGeofenceBridge extends GeofenceBridge {
   _FakeGeofenceBridge({
-    this.permissionStatus = LocationPermissionStatus.grantedForegroundAndBackground,
+    this.permissionStatus =
+        LocationPermissionStatus.grantedForegroundAndBackground,
   }) : super();
 
   final LocationPermissionStatus permissionStatus;
 
   @override
-  Future<LocationPermissionStatus> getPermissionStatus() async => permissionStatus;
+  Future<LocationPermissionStatus> getPermissionStatus() async =>
+      permissionStatus;
 
   @override
   Future<bool> isBatteryOptimizationExempt() async => true;

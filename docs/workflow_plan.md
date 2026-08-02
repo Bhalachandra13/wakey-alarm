@@ -476,22 +476,26 @@ places (unified setup wizard + consolidated health banner).*
       pick on map) and is the guided on-ramp for first-time
       users anyway.
 
-### Permissions UX (planned for the same iteration, not yet shipped)
+### Permissions UX (shipped in the same iteration)
 
-- [ ] Unified "Get ready" setup screen (`PermissionsSetupScreen`).
+- [x] Unified "Get ready" setup screen (`PermissionsSetupScreen`).
       One screen, plain language, one primary "Set up" button
       that walks the user through notif → exact alarm →
       foreground location → background explanation → background
-      in a single coherent flow. Triggered on first run and
+      → battery optimisation in a single coherent flow.
+      Triggered on first run via a `permissions_setup_shown`
+      SharedPreferences flag (auto-pushed from the alarms
+      screen's first build when something is missing) and
       any time the user taps "Fix" on the consolidated banner.
-- [ ] Replace the three separate banners on `alarms_screen`
+- [x] Replaced the three separate banners on `alarms_screen`
       (`NotificationPermissionBanner`, `ExactAlarmPermissionBanner`,
       `_GeofenceHealthBanner`) with a single
       `_PermissionsHealthBanner` that lists every missing item
       in one card with one "Fix" button → opens the setup
       screen. The setup screen covers all three cases, so the
-      consolidation is behaviour-preserving.
-- [ ] Tests for the setup screen (mocked bridges) and the
+      consolidation is behaviour-preserving. The old banner
+      widgets are retained (still used by the timer screen).
+- [x] Tests for the setup screen (mocked bridges) and the
       consolidated banner.
 
 ### Dependencies
@@ -508,9 +512,10 @@ permission flow patterns, map picker, geofence bridge).
       updated `test/presentation/screens/map_picker_screen_test.dart`).
       325 tests pass overall.
 - [x] **Automated:** `flutter analyze` clean.
-- [ ] **Automated:** Permission setup screen + consolidated
-      banner (pending the permissions-UX follow-up commit in
-      this same iteration).
+- [x] **Automated:** Permission setup screen + consolidated
+      banner — covered by `test/presentation/screens/
+      permissions_setup_screen_test.dart` and the updated
+      banner test in `alarms_screen_test.dart`.
 - [ ] **Manual (on-device):** From a fresh install, tap "Get
       ready" and confirm the single flow covers notif / exact
       alarm / foreground / background without three separate

@@ -2,20 +2,42 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:wakey_alarm/domain/alarm.dart';
 import 'package:wakey_alarm/native_bridge/geofence_bridge.dart';
+import 'package:wakey_alarm/native_bridge/permission_bridge.dart';
 import 'package:wakey_alarm/presentation/providers/alarms_provider.dart';
-import 'package:wakey_alarm/presentation/providers/geofence_arming_controller.dart';
 import 'package:wakey_alarm/presentation/providers/favourite_locations_provider.dart';
+import 'package:wakey_alarm/presentation/providers/geofence_arming_controller.dart';
 import 'package:wakey_alarm/presentation/screens/background_location_explanation_screen.dart';
 import 'package:wakey_alarm/presentation/screens/edit_alarm_screen.dart';
 import 'package:wakey_alarm/presentation/screens/favourites_screen.dart';
-import 'package:wakey_alarm/presentation/widgets/exact_alarm_banner.dart';
-import 'package:wakey_alarm/presentation/widgets/notification_permission_banner.dart';
+import 'package:wakey_alarm/presentation/screens/permissions_setup_screen.dart';
 
-class AlarmsScreen extends ConsumerWidget {
+class AlarmsScreen extends ConsumerStatefulWidget {
   const AlarmsScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<AlarmsScreen> createState() => _AlarmsScreenState();
+}
+
+class _AlarmsScreenState extends ConsumerState<AlarmsScreen> {
+  bool _autoTriggered = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Auto-push the permissions setup wizard on the first
+    // build when the user hasn't seen it yet and at least one
+    // permission is missing. The flag is gated on SharedPreferences
+    // inside the helper, so the push only happens on the very
+    // first eligible mount.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _autoTriggered) return;
+      _autoTriggered = true;
+      maybeAutoShowPermissionsSetup(context, ref);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final alarmsAsyncValue = ref.watch(alarmsNotifierProvider);
     final ringingId = ref.watch(ringingAlarmIdProvider).value;
     final ringingLabel = ringingId == null
@@ -43,9 +65,7 @@ class AlarmsScreen extends ConsumerWidget {
       children: [
         if (ringingId != null)
           _RingingBanner(alarmLabel: ringingLabel ?? 'Alarm'),
-        const NotificationPermissionBanner(),
-        const ExactAlarmPermissionBanner(),
-        const _GeofenceHealthBanner(),
+        const _PermissionsHealthBanner(),
         const _SavedPlacesRow(),
         Expanded(
           child: alarmsAsyncValue.when(
@@ -83,65 +103,114 @@ class AlarmsScreen extends ConsumerWidget {
 /// required permission (background location, battery optimization
 /// exemption, etc.). Tapping the banner opens the relevant
 /// Settings page.
-class _GeofenceHealthBanner extends ConsumerStatefulWidget {
-  const _GeofenceHealthBanner();
+/// Consolidated "permissions needed" banner that replaces the
+/// three separate banners that previously lived on this screen
+/// (`NotificationPermissionBanner`, `ExactAlarmPermissionBanner`,
+/// and the old geofence-only `_GeofenceHealthBanner`).
+///
+/// The banner checks every permission the alarms feature might
+/// need — notifications, exact alarm, foreground/background
+/// location (only if a geofence alarm exists), and battery
+/// optimization (only if an armed geofence exists) — and shows
+/// a single card listing the missing items with one "Fix"
+/// button. Tapping it opens the unified [PermissionsSetupScreen]
+/// wizard, which handles every missing permission in one pass.
+class _PermissionsHealthBanner extends ConsumerStatefulWidget {
+  const _PermissionsHealthBanner();
 
   @override
-  ConsumerState<_GeofenceHealthBanner> createState() =>
-      _GeofenceHealthBannerState();
+  ConsumerState<_PermissionsHealthBanner> createState() =>
+      _PermissionsHealthBannerState();
 }
 
-class _GeofenceHealthBannerState extends ConsumerState<_GeofenceHealthBanner> {
-  LocationPermissionStatus? _permissionStatus;
+class _PermissionsHealthBannerState
+    extends ConsumerState<_PermissionsHealthBanner>
+    with WidgetsBindingObserver {
+  NativePermissionStatus? _notifStatus;
+  bool? _canScheduleExactAlarms;
+  LocationPermissionStatus? _locationStatus;
   bool? _batteryExempt;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _refresh();
   }
 
-  Future<void> _refresh() async {
-    final bridge = ref.read(geofenceBridgeProvider);
-    final perm = await bridge.getPermissionStatus();
-    final battery = await bridge.isBatteryOptimizationExempt();
-    if (mounted) {
-      setState(() {
-        _permissionStatus = perm;
-        _batteryExempt = battery;
-      });
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  /// Re-check when the app returns to the foreground: the user
+  /// may have just granted permissions from the system Settings
+  /// page launched by tapping the banner / wizard.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _refresh();
     }
   }
 
-  bool _hasIssue(List<Alarm>? alarms) {
-    if (alarms == null) return false;
-    final hasArmedLocation = alarms.any(
-      (a) => a.triggerType == AlarmTriggerType.location && a.isArmed,
+  Future<void> _refresh() async {
+    final perm = ref.read(permissionBridgeProvider);
+    final geo = ref.read(geofenceBridgeProvider);
+    final results = await Future.wait([
+      perm.getNotificationPermissionStatus(),
+      perm.canScheduleExactAlarms(),
+      geo.getPermissionStatus(),
+      geo.isBatteryOptimizationExempt(),
+    ]);
+    if (!mounted) return;
+    setState(() {
+      _notifStatus = results[0] as NativePermissionStatus;
+      _canScheduleExactAlarms = results[1] as bool;
+      _locationStatus = results[2] as LocationPermissionStatus;
+      _batteryExempt = results[3] as bool;
+    });
+  }
+
+  /// Build the list of "missing" items to show in the banner.
+  /// Returns an empty list when everything is good (banner hides).
+  List<String> _missingItems(List<Alarm> alarms) {
+    final missing = <String>[];
+    final notifGranted =
+        _notifStatus == NativePermissionStatus.granted ||
+        _notifStatus == NativePermissionStatus.notRequired;
+    if (!notifGranted) missing.add('Notifications');
+    if (_canScheduleExactAlarms == false) missing.add('Exact alarms');
+    final hasLocationAlarm = alarms.any(
+      (a) => a.triggerType == AlarmTriggerType.location,
     );
-    if (!hasArmedLocation) return false;
-    if (_permissionStatus !=
-            LocationPermissionStatus.grantedForegroundAndBackground ||
-        _batteryExempt == false) {
-      return true;
+    if (hasLocationAlarm) {
+      final locationFullyGranted =
+          _locationStatus ==
+              LocationPermissionStatus.grantedForegroundAndBackground ||
+          _locationStatus == LocationPermissionStatus.notRequired;
+      if (!locationFullyGranted) missing.add('Background location');
+      if (_batteryExempt == false) missing.add('Battery optimisation');
     }
-    return false;
+    return missing;
   }
 
   @override
   Widget build(BuildContext context) {
-    final alarms = ref.watch(alarmsProvider).value;
-    if (!_hasIssue(alarms)) return const SizedBox.shrink();
+    final alarms = ref.watch(alarmsProvider).value ?? const <Alarm>[];
+    final missing = _missingItems(alarms);
+    if (missing.isEmpty) return const SizedBox.shrink();
     final theme = Theme.of(context);
     return Material(
+      key: const Key('permissionsHealthBanner'),
       color: theme.colorScheme.tertiaryContainer,
       child: InkWell(
         onTap: () async {
-          final flow = LocationPermissionFlow(ref.read(geofenceBridgeProvider));
-          await flow.runFlow(context);
+          await PermissionsSetupScreen.show(context);
           await _refresh();
         },
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
           child: Row(
             children: [
               Icon(
@@ -150,15 +219,33 @@ class _GeofenceHealthBannerState extends ConsumerState<_GeofenceHealthBanner> {
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: Text(
-                  _batteryExempt == false
-                      ? 'Geofence alarms may be killed by battery optimization. Tap to fix.'
-                      : 'Background location is required for geofence alarms to fire. Tap to grant.',
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: theme.colorScheme.onTertiaryContainer,
-                  ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Permissions needed',
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        color: theme.colorScheme.onTertiaryContainer,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      missing.join(' • '),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onTertiaryContainer,
+                      ),
+                    ),
+                  ],
                 ),
               ),
+              const SizedBox(width: 8),
+              Text(
+                'Fix',
+                style: theme.textTheme.labelLarge?.copyWith(
+                  color: theme.colorScheme.onTertiaryContainer,
+                ),
+              ),
+              const Icon(Icons.chevron_right, size: 20),
             ],
           ),
         ),
