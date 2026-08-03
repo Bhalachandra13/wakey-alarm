@@ -2,7 +2,7 @@
 
 - **Date:** 2026-08-03 21:39
 - **Iteration:** 5 (publishing prep — listing copy only)
-- **Commit:** *(filled in after committing)*
+- **Commit:** `6f127f1`
 
 ## What
 Two factual copy fixes in the runbook's full-description sample
