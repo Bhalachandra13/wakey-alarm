@@ -169,9 +169,7 @@ acceptance of the updated policy.
 For privacy questions, data deletion requests, or any other
 inquiries:
 
-- **Email:** [YOUR_EMAIL_HERE] *(replace with the developer's real
-  contact address before submitting to the Play Store — this is
-  the address Google and end users will use to reach you)*
+- **Email:** your.cet.dude@gmail.com
 - **Developer:** TingerBuddanna
 
 The developer will respond to verified requests within 30 days.

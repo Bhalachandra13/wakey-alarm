@@ -134,11 +134,10 @@ Privacy policy** field. Play checks the URL must return
 HTTP 200 with the policy text visible (it does a fetch, not
 just a HEAD).
 
-> **The privacy-policy.md file in this repo contains a
-> placeholder email `privacy@example.com`.** Edit both the
-> hosted version *and* the in-repo source before going live.
-> The hosted version is what the user will see; the in-repo
-> version is what gets re-deployed on the next push.
+> The privacy policy's contact email is set in
+> `docs/privacy-policy.md` §8. If you ever change it, edit the
+> in-repo file and push — the GitHub Pages site redeploys
+> automatically.
 
 ---
 
