@@ -387,7 +387,17 @@ object GeofenceController {
             .addGeofence(geofence)
             .build()
 
-        client.addGeofences(request, pendingIntent)
+        client.removeGeofences(pendingIntent)
+            .continueWithTask { preRemove ->
+                if (!preRemove.isSuccessful) {
+                    Log.w(
+                        TAG,
+                        "Pre-add removeGeofences for alarmId=$alarmId failed; " +
+                            "proceeding to addGeofences anyway: ${preRemove.exception}",
+                    )
+                }
+                client.addGeofences(request, pendingIntent)
+            }
             .addOnSuccessListener {
                 Log.d(TAG, "Geofence added for alarmId=$alarmId")
                 // Persist the alarm metadata so that:
@@ -674,6 +684,10 @@ object GeofenceController {
                 "Internal error. Try again."
             com.google.android.gms.common.api.CommonStatusCodes.ERROR ->
                 "Geofence setup failed. Try again."
+            com.google.android.gms.common.api.CommonStatusCodes.DEVELOPER_ERROR ->
+                "Stale geofence state. Reboot the device and try again. " +
+                    "If the problem persists, clear the app storage in " +
+                    "Android Settings \u2192 Apps \u2192 Wakey-Wakey \u2192 Storage."
             else -> "Geofence setup failed (code $code)"
         }
     }
