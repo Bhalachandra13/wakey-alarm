@@ -2,7 +2,7 @@
 
 - **Date:** 2026-08-03 22:01
 - **Iteration:** 5 (bugfix from on-device testing)
-- **Commit:** *(filled in after committing)*
+- **Commit:** `5b3f689`
 
 ## Symptom
 On a fresh install of the release APK on a Pixel 8, arming a
