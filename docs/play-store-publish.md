@@ -258,7 +258,7 @@ one new way: by location.
 ▸ Geofence alarms
   Set an alarm centred on a map point and a radius. The alarm fires
   the moment your device enters the circle, so you can doze off on
-  the train and wake up a few kilometres before your stop. The native
+  the train and wake up as you pull into your stop. The native
   Android Geofencing API (Google Play Services) is used, so the
   detection is battery-efficient and survives the app being closed.
 
@@ -271,7 +271,7 @@ one new way: by location.
 ▸ Favourite locations
   Save Home, Work, or any place you go often, and the next time you
   set up a geofence the saved points appear as one-tap chips in the
-  map picker. Two taps from "I want to wake up before I reach the
+  map picker. Two taps from "I want to be woken as I arrive at the
   airport" to "armed."
 
 ▸ Timer
