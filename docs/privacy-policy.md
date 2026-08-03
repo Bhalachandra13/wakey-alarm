@@ -1,6 +1,6 @@
 # Wakey-Wakey — Privacy Policy
 
-**Last updated:** 2 August 2026
+**Last updated:** 3 August 2026
 
 Wakey-Wakey ("the app") is an Android alarm application that, in addition
 to a conventional time-based alarm, supports a **geofencing alarm** —
@@ -169,9 +169,9 @@ acceptance of the updated policy.
 For privacy questions, data deletion requests, or any other
 inquiries:
 
-- **Email:** privacy@example.com
-  *(update to your real address before publishing — see
-  `docs/play-store-publish.md` §3)*
+- **Email:** [YOUR_EMAIL_HERE] *(replace with the developer's real
+  contact address before submitting to the Play Store — this is
+  the address Google and end users will use to reach you)*
 - **Developer:** TingerBuddanna
 
 The developer will respond to verified requests within 30 days.
