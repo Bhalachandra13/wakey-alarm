@@ -102,6 +102,27 @@ class _EmptyAlarmsNotifier extends AlarmsNotifier {
   Future<List<Alarm>> build() async => const <Alarm>[];
 }
 
+class _LocationAlarmsNotifier extends AlarmsNotifier {
+  @override
+  Future<List<Alarm>> build() async => const <Alarm>[
+    Alarm(
+      id: 1,
+      label: 'Get off at airport',
+      triggerType: AlarmTriggerType.location,
+      latitude: 12.34,
+      longitude: 56.78,
+      radiusMeters: 1000,
+      isEnabled: true,
+      isArmed: false,
+      soundUri: '',
+      vibrate: true,
+      snoozeDurationMin: 5,
+      createdAt: '2026-08-03T00:00:00Z',
+      updatedAt: '2026-08-03T00:00:00Z',
+    ),
+  ];
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() {
@@ -146,7 +167,7 @@ void main() {
       expect(find.text('Get ready'), findsOneWidget);
       expect(find.text('Notifications'), findsOneWidget);
       expect(find.text('Exact alarms'), findsOneWidget);
-      expect(find.text('Location (for geofence alarms)'), findsOneWidget);
+      expect(find.text('Precise location, all the time'), findsOneWidget);
       expect(find.text('Battery optimisation'), findsOneWidget);
       expect(
         find.byKey(const Key('permissionsSetupRunButton')),
@@ -203,16 +224,95 @@ void main() {
       );
       // Tap Set up and pump until the flow settles. The flow
       // grants both permissions, the checklist updates, and
-      // the All set! card appears.
+      // the All set! card appears. The location step is gated
+      // by a "one quick heads-up" AlertDialog that the test
+      // needs to dismiss before the foreground request fires.
       await tester.tap(find.byKey(const Key('permissionsSetupRunButton')));
       await tester.runAsync(() async {
-        await Future<void>.delayed(const Duration(milliseconds: 100));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
       });
       await tester.pump();
+      // The location step is not required here (no LOCATION
+      // alarms in the fake list), so the heads-up dialog
+      // does not appear; the All set! card is shown directly.
       expect(find.byKey(const Key('permissionsSetupAllSet')), findsOneWidget);
       // The fake bridges recorded the requests.
       expect(perm.notif, NativePermissionStatus.granted);
       expect(perm.exact, isTrue);
     });
+
+    testWidgets(
+      'shows the pre-foreground heads-up dialog when a LOCATION alarm '
+      'is set and location is denied',
+      (tester) async {
+        // Override the alarms notifier with one that has a
+        // LOCATION alarm, so the location step is required.
+        // Foreground location is denied so the flow has to
+        // surface the heads-up dialog before the system dialog.
+        perm = _FakePermissionBridge(
+          notif: NativePermissionStatus.granted,
+          exact: true,
+        );
+        geo = _FakeGeofenceBridge()..location = LocationPermissionStatus.denied;
+
+        Widget wrapWithLocationAlarm() {
+          return ProviderScope(
+            overrides: [
+              permissionBridgeProvider.overrideWithValue(perm),
+              geofenceBridgeProvider.overrideWithValue(geo),
+              alarmBridgeProvider.overrideWithValue(alarm),
+              alarmsNotifierProvider.overrideWith(
+                _LocationAlarmsNotifier.new,
+              ),
+            ],
+            child: const MaterialApp(home: PermissionsSetupScreen()),
+          );
+        }
+
+        await tester.pumpWidget(wrapWithLocationAlarm());
+        await tester.runAsync(() async {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        });
+        await tester.pump();
+
+        // Tap "Set up". The flow should immediately surface the
+        // heads-up dialog (before calling requestForegroundLocation).
+        await tester.tap(find.byKey(const Key('permissionsSetupRunButton')));
+        await tester.runAsync(() async {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        });
+        await tester.pump();
+
+        // The heads-up dialog is on screen and its key copy is present.
+        expect(
+          find.byKey(const Key('locationForegroundHeadsUp')),
+          findsOneWidget,
+        );
+        expect(
+          find.text('One quick heads-up'),
+          findsOneWidget,
+        );
+        // The dialog names the wrong choice explicitly so the
+        // user knows what NOT to pick in the next screen.
+        expect(
+          find.textContaining('"While using the app" is not enough'),
+          findsOneWidget,
+        );
+        // Dismissing the dialog should advance the flow.
+        await tester.tap(
+          find.byKey(const Key('locationForegroundHeadsUpOk')),
+        );
+        await tester.runAsync(() async {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        });
+        await tester.pump();
+        // The fake bridge records the request; the dialog is gone.
+        expect(geo.location, LocationPermissionStatus.grantedForegroundAndBackground);
+        expect(
+          find.byKey(const Key('locationForegroundHeadsUp')),
+          findsNothing,
+        );
+      },
+    );
   });
 }

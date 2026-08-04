@@ -215,9 +215,9 @@ class _PermissionsSetupScreenState
                 ),
                 _ChecklistRow(
                   icon: Icons.location_on_outlined,
-                  title: 'Location (for geofence alarms)',
+                  title: 'Precise location, all the time',
                   description: _locationNeeded
-                      ? 'Needed for your geofence alarm. Background location lets the alarm fire when the app is closed.'
+                      ? 'Needed for your geofence alarm. Android calls this "Allow all the time" \u2014 not "While using the app", which would prevent the alarm from firing when the app is closed.'
                       : 'Only needed when you create a geofence alarm. You can grant it later.',
                   isOk: _locationOk,
                   isNeeded: _locationNeeded,
@@ -481,6 +481,45 @@ class PermissionsSetupFlow {
     // 3. Foreground location.
     var loc = await geo.getPermissionStatus();
     if (loc == LocationPermissionStatus.denied) {
+      // Heads-up BEFORE the system dialog: many users pick
+      // "Allow only while using the app" because it is the
+      // first option and reads as the "default", not realising
+      // it disables geofence firing when the app is closed.
+      // The single biggest "my geofence alarm didn't fire"
+      // support ticket is exactly this choice. Show a small
+      // dialog first so the user knows to pick "Allow all the
+      // time" on the upcoming system screen.
+      if (context.mounted) {
+        final ready = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            key: const Key('locationForegroundHeadsUp'),
+            icon: Icon(
+              Icons.tips_and_updates_outlined,
+              color: Theme.of(ctx).colorScheme.primary,
+            ),
+            title: const Text('One quick heads-up'),
+            content: const Text(
+              'The next screen is Android asking you to choose a '
+              'location option.\n\n'
+              'Pick "Allow all the time" \u2014 not "While using the '
+              'app".\n\n'
+              '"While using the app" is not enough for geofence '
+              'alarms: the alarm would not fire when the app is '
+              'in the background or your screen is off.',
+            ),
+            actions: [
+              FilledButton(
+                key: const Key('locationForegroundHeadsUpOk'),
+                onPressed: () => Navigator.of(ctx).pop(true),
+                child: const Text("I'll pick Allow all the time"),
+              ),
+            ],
+          ),
+        );
+        if (ready != true) return;
+      }
+      if (!context.mounted) return;
       loc = await geo.requestForegroundLocation();
       await onProgress();
     }

@@ -12,11 +12,31 @@ void main() {
       );
 
       expect(
-        find.text('Background location'),
+        find.text('Allow location all the time'),
         findsOneWidget,
       );
       expect(
-        find.text('Wakey-Wakey needs background location'),
+        find.text('Wakey-Wakey needs location all the time'),
+        findsOneWidget,
+      );
+      // The "not enough" warning callout is present and
+      // names the wrong option explicitly.
+      expect(
+        find.byKey(const Key('bgLocationWhyNotWhileUsingApp')),
+        findsOneWidget,
+      );
+      expect(
+        find.text('"Allow only while using the app" is not enough'),
+        findsOneWidget,
+      );
+      // The Settings mockup is rendered and highlights the
+      // correct option.
+      expect(
+        find.byKey(const Key('bgLocationMockup')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('bgLocationMockupPickThisBadge')),
         findsOneWidget,
       );
       expect(find.text('Not now'), findsOneWidget);
