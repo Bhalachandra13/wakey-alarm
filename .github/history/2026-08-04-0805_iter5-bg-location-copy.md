@@ -2,7 +2,7 @@
 
 - **Date:** 2026-08-04 08:05
 - **Iteration:** 5 (UI clarity from on-device testing)
-- **Commit:** *(filled in after committing)*
+- **Commit:** `cd8e495`
 
 ## Symptom
 On-device testing on a second Pixel 8 produced the same
