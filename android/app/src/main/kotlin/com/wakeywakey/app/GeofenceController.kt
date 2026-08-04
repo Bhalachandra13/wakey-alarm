@@ -387,17 +387,7 @@ object GeofenceController {
             .addGeofence(geofence)
             .build()
 
-        client.removeGeofences(pendingIntent)
-            .continueWithTask { preRemove ->
-                if (!preRemove.isSuccessful) {
-                    Log.w(
-                        TAG,
-                        "Pre-add removeGeofences for alarmId=$alarmId failed; " +
-                            "proceeding to addGeofences anyway: ${preRemove.exception}",
-                    )
-                }
-                client.addGeofences(request, pendingIntent)
-            }
+        client.addGeofences(request, pendingIntent)
             .addOnSuccessListener {
                 Log.d(TAG, "Geofence added for alarmId=$alarmId")
                 // Persist the alarm metadata so that:
