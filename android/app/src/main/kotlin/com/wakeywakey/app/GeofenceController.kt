@@ -440,18 +440,40 @@ object GeofenceController {
                 // indication of *why* (GEOFENCE_NOT_AVAILABLE when
                 // location is off, TOO_MANY_GEOFENCES when the app
                 // already has 100 registered, etc.).
-                val (humanMessage, code) = when (e) {
-                    is com.google.android.gms.common.api.ApiException ->
-                        humanizeGeofenceError(e.statusCode) to e.statusCode
-                    else -> (e.message ?: "unknown_error") to -1
+                //
+                // The `Status.statusMessage` (carried on the
+                // ApiException as `e.status?.statusMessage`) is the
+                // single most useful diagnostic for the
+                // rarely-seen codes like 10 (DEVELOPER_ERROR)
+                // because it names the actual structural problem
+                // (e.g. "PendingIntent has wrong flags", "Geofence
+                // has invalid radius"). We pass it through to the
+                // UI so a developer-side user can act on it
+                // without needing adb logcat.
+                val (humanMessage, code, statusMessage) = when (e) {
+                    is com.google.android.gms.common.api.ApiException -> {
+                        val msg = e.status?.statusMessage.orEmpty()
+                        Triple(
+                            humanizeGeofenceError(e.statusCode, msg),
+                            e.statusCode,
+                            msg,
+                        )
+                    }
+                    else -> Triple(e.message ?: "unknown_error", -1, "")
                 }
                 Log.w(
                     TAG,
-                    "addGeofences failed for alarmId=$alarmId code=$code",
+                    "addGeofences failed for alarmId=$alarmId code=$code " +
+                        "statusMessage=\"$statusMessage\"",
                     e,
                 )
                 result.success(
-                    mapOf("added" to false, "error" to humanMessage, "code" to code),
+                    mapOf(
+                        "added" to false,
+                        "error" to humanMessage,
+                        "code" to code,
+                        "details" to statusMessage,
+                    ),
                 )
             }
     }
@@ -663,17 +685,30 @@ object GeofenceController {
      * most common cause is "Location is off" (1004) and the fix is
      * a one-tap Settings toggle.
      *
+     * [statusMessage] is the raw `Status.statusMessage` from the
+     * Play Services `ApiException` (often empty for the well-known
+     * codes, but carries the actual structural reason for the
+     * rarely-seen codes like 10 (DEVELOPER_ERROR): "PendingIntent
+     * has wrong flags", "Geofence has invalid radius", etc.). It
+     * is appended in parentheses whenever present so a developer
+     * can act on the root cause without needing adb logcat.
+     *
      * Codes recognized:
      *  * 1000 — `GEOFENCE_TOO_MANY_GEOFENCES` (per-app cap of 100)
      *  * 1001 — `GEOFENCE_TOO_MANY_PENDING_INTENTS` (per-app cap)
      *  * 1004 — `GEOFENCE_NOT_AVAILABLE` (location services off)
-     *  * 13   — `SUCCESS` (rare in failure path; defensive)
+     *  * 1005 — `GEOFENCE_NO_LONGER_AVAILABLE`
+     *  * 10   — `DEVELOPER_ERROR` (structural request issue)
      *  * 6    — `INTERNAL_ERROR`
      *  * 7    — `ERROR` (generic)
+     *  * 13   — `SUCCESS` (rare in failure path; defensive)
      *  * anything else — generic "Geofence setup failed (code N)".
      */
-    private fun humanizeGeofenceError(code: Int): String {
-        return when (code) {
+    private fun humanizeGeofenceError(
+        code: Int,
+        statusMessage: String = "",
+    ): String {
+        val base = when (code) {
             1000 -> "Too many geofences registered (max 100). Disarm an existing location alarm and try again."
             1001 -> "Too many pending geofence intents. Restart the device and try again."
             1004 -> "Location services are off. Turn on Location in system Settings and try again."
@@ -685,11 +720,12 @@ object GeofenceController {
             com.google.android.gms.common.api.CommonStatusCodes.ERROR ->
                 "Geofence setup failed. Try again."
             com.google.android.gms.common.api.CommonStatusCodes.DEVELOPER_ERROR ->
-                "Stale geofence state. Reboot the device and try again. " +
+                "Geofence setup was rejected by Android. Reboot the device and try again. " +
                     "If the problem persists, clear the app storage in " +
                     "Android Settings \u2192 Apps \u2192 Wakey-Wakey \u2192 Storage."
             else -> "Geofence setup failed (code $code)"
         }
+        return if (statusMessage.isNotBlank()) "$base (Reason: $statusMessage)" else base
     }
 
     // Kept here so the same file declares the geofence constants

@@ -124,14 +124,27 @@
              BroadcastReceiver (not a dynamic one) because the OS
              delivers the broadcast even when the app process is
              dead — the normal state for a geofence fire that
-             happens while the user is in the background. The
-             PendingIntent registered with the GeofencingClient
-             uses FLAG_IMMUTABLE, so a forged broadcast can only
-             trigger the alarm UI, not modify which alarm fires. -->
+             happens while the user is in the background.
+
+             exported="true" is required: on Android 12+ the
+             GeofencingClient delivers the transition broadcast via
+             a PendingIntent with an explicit component target. Some
+             Pixel firmware revisions refuse to deliver to a
+             non-exported receiver and return DEVELOPER_ERROR
+             (code 10) from addGeofences() in that case.
+
+             The security cost is minimal: the PendingIntent is
+             built with FLAG_IMMUTABLE, so a third-party broadcast
+             cannot modify the action or the data URI; a malicious
+             app can therefore only trigger the alarm UI with the
+             exact alarmId it guesses, not change which alarm fires
+             or steal data. The receiver code itself treats the
+             alarmId extra as an opaque lookup key and only acts on
+             alarms present in the local SQLite database. -->
         <receiver
             android:name=".GeofenceTransitionReceiver"
             android:enabled="true"
-            android:exported="false" />
+            android:exported="true" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
